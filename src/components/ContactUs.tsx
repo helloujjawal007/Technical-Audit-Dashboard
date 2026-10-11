@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Mail, MapPin, Phone, Loader2, CheckCircle2, AlertCircle, Send, User, MessageSquare, Sparkles } from "lucide-react";
+import { invokeEdgeFunction } from "@/lib/api";
 
 export function ContactUs() {
   const [name, setName] = useState("");
@@ -21,24 +22,15 @@ export function ContactUs() {
     setError(null);
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/contact-submit`, {
+      await invokeEdgeFunction("contact-submit", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
+        body: {
           name: name.trim(),
           email: email.trim(),
           subject: subject.trim() || "General Inquiry",
           message: message.trim(),
-        }),
+        },
       });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Could not send message. Please try again.");
-      }
 
       setSuccess(true);
       setName("");

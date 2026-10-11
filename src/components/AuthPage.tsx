@@ -17,6 +17,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { invokeEdgeFunction } from "@/lib/api";
 
 type AuthStep = "choose" | "signup" | "signin" | "forgot" | "reset";
 
@@ -233,18 +234,17 @@ export function AuthPage({ onGuestLogin }: AuthPageProps) {
     setInfo(null);
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/password-reset`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({ email: cleanEmail }),
+      // First try native Supabase Auth password reset
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+        redirectTo: `${window.location.origin}/#type=recovery`,
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Could not send reset email. Please try again.");
+      if (resetErr) {
+        // Fallback to edge function if configured
+        await invokeEdgeFunction("password-reset", {
+          method: "POST",
+          body: { email: cleanEmail },
+        });
       }
 
       setInfo("Password reset link sent. Check your email and click the link to set a new password.");

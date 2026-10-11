@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, ScanSearch, AlertCircle, Loader2, History, LogOut, User as UserIcon, Pause, Play, ChevronDown, ChevronUp, Ghost } from "lucide-react";
+import { Search, AlertCircle, Loader2, History, ChevronDown, ChevronUp, Ghost } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
+import { invokeEdgeFunction } from "@/lib/api";
 import { AuthPage } from "@/components/AuthPage";
 import { AuditForm } from "@/components/AuditForm";
 import { HistoryList } from "@/components/HistoryList";
@@ -9,8 +10,11 @@ import { ResultsView } from "@/components/ResultsView";
 import { CrawlResultsView } from "@/components/CrawlResultsView";
 import { AllHistoryModal } from "@/components/AllHistoryModal";
 import { CreditDisplay } from "@/components/CreditDisplay";
-import { NavBar } from "@/components/NavBar";
-import { getCreditUsage, recordCreditUsage, canStartAudit, getGuestCreditUsage, recordGuestCreditUsage, canStartGuestAudit } from "@/lib/credits";
+import { NavBar, type NavPage } from "@/components/NavBar";
+import { ContentGeneration } from "@/components/ContentGeneration";
+import { PlagiarismChecker } from "@/components/PlagiarismChecker";
+import { ContactUs } from "@/components/ContactUs";
+import { getCreditUsage, getAllCreditUsage, recordCreditUsage, canStartAudit, getGuestCreditUsage, recordGuestCreditUsage, canStartGuestAudit } from "@/lib/credits";
 import type { AuditResult, AuditRow, AuditMode, AuditDepth, CrawlPageResult, CustomExtractionFields } from "@/types";
 
 function normalizeUrl(raw: string): string {
@@ -22,6 +26,7 @@ function normalizeUrl(raw: string): string {
 
 function App() {
   const { user, loading: authLoading, signOut, guest, signInAsGuest, exitGuest } = useAuth();
+  const [activeNav, setActiveNav] = useState<NavPage>("audit");
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [selected, setSelected] = useState<AuditRow | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -77,7 +82,6 @@ function App() {
 
   const refreshCreditUsage = useCallback(async () => {
     if (!user) return;
-    const { getAllCreditUsage } = await import("@/lib/credits");
     await getAllCreditUsage(user.id);
   }, [user]);
 
@@ -92,21 +96,10 @@ function App() {
   }, [user, fetchAudits, refreshCreditUsage]);
 
   const auditSinglePage = async (url: string, auditId?: string, depth?: AuditDepth, mode: string = "single", extractionFields?: CustomExtractionFields): Promise<AuditResult> => {
-    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/seo-audit`, {
+    return await invokeEdgeFunction<AuditResult>("seo-audit", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify({ url, auditId, mode, auditDepth: depth || "standard", extractionFields }),
+      body: { url, auditId, mode, auditDepth: depth || "standard", extractionFields },
     });
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      throw new Error(errBody.error || `Audit failed (${res.status})`);
-    }
-
-    return await res.json() as AuditResult;
   };
 
   const handleAudit = async (input: string, mode: AuditMode, depth: AuditDepth, _extractionFields?: CustomExtractionFields) => {
@@ -163,25 +156,21 @@ function App() {
   };
 
   const handleSingleAudit = async (normalizedUrl: string, auditType: AuditMode, depth: AuditDepth, extractionFields?: CustomExtractionFields) => {
-    let insertData: any = null;
-    let insertError: any = null;
+    let newAudit: AuditRow | null = null;
 
     if (user) {
-      const res = await supabase
+      const { data, error } = await supabase
         .from("seo_audits")
         .insert({ url: normalizedUrl, status: "running", audit_type: auditType, audit_depth: depth })
         .select()
         .single();
-      insertData = res.data;
-      insertError = res.error;
+      if (error || !data) {
+        setError("Could not start the audit. Please try again.");
+        return;
+      }
+      newAudit = data as AuditRow;
     }
 
-    if (insertError || (!insertData && user)) {
-      setError("Could not start the audit. Please try again.");
-      return;
-    }
-
-    const newAudit = insertData as AuditRow | null;
     if (newAudit) {
       setAudits((prev) => [newAudit, ...prev]);
       setSelected(newAudit);
@@ -308,24 +297,13 @@ function App() {
     setCrawlSitemapUrl(null);
 
     try {
-      const crawlRes = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/seo-audit`, {
+      const crawlData = await invokeEdgeFunction<{ urls: string[]; sitemapUrl: string | null; sitemapsChecked?: string[] }>("seo-audit", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({ url: normalizedUrl, mode: "crawl", auditDepth: depth }),
+        body: { url: normalizedUrl, mode: "crawl", auditDepth: depth },
       });
-
-      if (!crawlRes.ok) {
-        const errBody = await crawlRes.json().catch(() => ({}));
-        throw new Error(errBody.error || `Crawl failed (${crawlRes.status})`);
-      }
-
-      const crawlData = await crawlRes.json() as { urls: string[]; sitemapUrl: string | null; sitemapsChecked?: string[] };
       const urls = crawlData.urls;
 
-      if (urls.length === 0) {
+      if (!urls || urls.length === 0) {
         throw new Error("No page URLs found after traversing the sitemap. Cannot crawl.");
       }
 
@@ -414,13 +392,17 @@ function App() {
         userName={userName}
         isGuest={isGuest}
         guestCredits={guestCredits}
+        activeNav={activeNav}
+        onNavChange={setActiveNav}
         onSignOut={signOut}
         onExitGuest={exitGuest}
       />
 
       <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* AUDIT PAGE */}
-        {
+        {activeNav === "content" && <ContentGeneration />}
+        {activeNav === "plagiarism" && <PlagiarismChecker />}
+        {activeNav === "contact" && <ContactUs />}
+        {activeNav === "audit" && (
           <>
             <section className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
               {/* Audit form card */}
@@ -580,7 +562,7 @@ function App() {
               </section>
             )}
           </>
-        }
+        )}
       </div>
 
       {/* All History Modal */}

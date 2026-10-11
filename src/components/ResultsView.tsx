@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Accessibility, ShieldCheck, Layers } from "lucide-react";
+import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers } from "lucide-react";
 import { ScoreGauge } from "@/components/ScoreGauge";
 import { Checklist } from "@/components/Checklist";
 import { SocialPreviewCard } from "@/components/SocialPreviewCard";
@@ -13,7 +13,7 @@ import { UpdatedContentPanel } from "@/components/UpdatedContentPanel";
 import { GooglePropertiesPanel } from "@/components/GooglePropertiesPanel";
 import { InternalLinkStatusPanel } from "@/components/InternalLinkStatusPanel";
 import { CopyButton } from "@/components/CopyButton";
-import { CATEGORY_LABELS, CATEGORY_META, CATEGORY_ORDER, STATUS_META, type AuditResult, type CheckCategory, type CheckStatus, type CategoryScore, type CustomAuditData } from "@/types";
+import { CATEGORY_META, CATEGORY_ORDER, STATUS_META, type AuditResult, type CheckCategory, type CheckStatus, type CustomAuditData } from "@/types";
 
 interface ResultsViewProps {
   result: AuditResult;
@@ -46,7 +46,8 @@ const TABS: { id: Tab; label: string; icon: typeof BarChart3 }[] = [
 export function ResultsView({ result, url, auditId }: ResultsViewProps) {
   const [tab, setTab] = useState<Tab>("overview");
 
-  const counts = result.checks.reduce(
+  const checks = result.checks || [];
+  const counts = checks.reduce(
     (acc, c) => { acc[c.status] = (acc[c.status] || 0) + 1; return acc; },
     { pass: 0, fail: 0, warn: 0, info: 0 },
   );
@@ -76,7 +77,7 @@ export function ResultsView({ result, url, auditId }: ResultsViewProps) {
             {result.hasTOC && <Badge label="TOC" color="bg-blue-50 text-blue-700" />}
             {result.hasFAQ && <Badge label="FAQ" color="bg-violet-50 text-violet-700" />}
             {result.hasInfographic && <Badge label="Infographic" color="bg-emerald-50 text-emerald-700" />}
-            {result.schema.length > 0 && <Badge label={`${result.schema.length} Schema`} color="bg-amber-50 text-amber-700" />}
+            {(result.schema || []).length > 0 && <Badge label={`${result.schema.length} Schema`} color="bg-amber-50 text-amber-700" />}
             <button
               onClick={handleExport}
               className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 font-medium transition-colors print:hidden"
@@ -191,8 +192,9 @@ function CustomAuditPanel({ data }: { data: CustomAuditData }) {
 }
 
 function OverviewTab({ result, counts }: { result: AuditResult; counts: Record<CheckStatus, number> }) {
-  const failedChecks = result.checks.filter((c) => c.status === "fail");
-  const warnChecks = result.checks.filter((c) => c.status === "warn");
+  const checks = result.checks || [];
+  const failedChecks = checks.filter((c) => c.status === "fail");
+  const warnChecks = checks.filter((c) => c.status === "warn");
 
   return (
     <div className="space-y-6">

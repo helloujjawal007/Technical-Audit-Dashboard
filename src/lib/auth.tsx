@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { invokeEdgeFunction } from "@/lib/api";
 
 export interface Subscription {
   tier: string;
@@ -98,15 +99,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signInAsGuest = useCallback(async () => {
     let ipKey = `guest-local-${Date.now()}`;
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/get-ip`, {
+      const data = await invokeEdgeFunction<{ ip?: string }>("get-ip", {
         method: "GET",
-        headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ip && data.ip !== "unknown") {
-          ipKey = data.ip;
-        }
+      if (data?.ip && data.ip !== "unknown") {
+        ipKey = data.ip;
       }
     } catch { /* fallback to local key */ }
     const guestInfo: GuestInfo = { isGuest: true, ipKey };
@@ -128,6 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");

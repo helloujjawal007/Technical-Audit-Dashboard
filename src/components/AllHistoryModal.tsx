@@ -183,8 +183,6 @@ export function AllHistoryModal({ open, onClose, onSelect, onDelete }: AllHistor
           ) : isDomainView && domainGroups ? (
             <div className="space-y-4">
               {domainGroups.map(({ domain, audits: domainAudits }) => {
-                const latest = domainAudits[0];
-                const score = latest.score !== null ? scoreColor(latest.score) : null;
                 return (
                   <div key={domain}>
                     <div className="flex items-center gap-2 mb-2">

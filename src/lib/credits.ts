@@ -85,9 +85,13 @@ export async function recordCreditUsage(
   auditType: string,
   urlCount: number = 1
 ): Promise<void> {
-  await (await import("@/lib/supabase")).supabase
-    .from("credit_usage")
-    .insert({ user_id: userId, audit_type: auditType, url_count: urlCount });
+  try {
+    await (await import("@/lib/supabase")).supabase
+      .from("credit_usage")
+      .insert({ user_id: userId, audit_type: auditType, url_count: urlCount });
+  } catch (err) {
+    console.warn("Could not record credit usage:", err);
+  }
 }
 
 export function canStartAudit(
@@ -107,48 +111,63 @@ export function canStartAudit(
 // ===== Guest credit tracking (IP-based, 5/day) =====
 
 export async function getGuestCreditUsage(ipKey: string): Promise<CreditUsage> {
-  const { supabase } = await import("@/lib/supabase");
-  const today = new Date().toISOString().split("T")[0];
+  try {
+    const { supabase } = await import("@/lib/supabase");
+    const today = new Date().toISOString().split("T")[0];
 
-  const { data } = await supabase
-    .from("guest_credits")
-    .select("count")
-    .eq("ip_address", ipKey)
-    .eq("used_date", today)
-    .maybeSingle();
+    const { data } = await supabase
+      .from("guest_credits")
+      .select("count")
+      .eq("ip_address", ipKey)
+      .eq("used_date", today)
+      .maybeSingle();
 
-  const used = data?.count || 0;
-  return {
-    used,
-    limit: GUEST_DAILY_LIMIT,
-    remaining: Math.max(0, GUEST_DAILY_LIMIT - used),
-    windowDays: 1,
-    windowLabel: "per day",
-    label: "Guest",
-  };
+    const used = data?.count || 0;
+    return {
+      used,
+      limit: GUEST_DAILY_LIMIT,
+      remaining: Math.max(0, GUEST_DAILY_LIMIT - used),
+      windowDays: 1,
+      windowLabel: "per day",
+      label: "Guest",
+    };
+  } catch {
+    return {
+      used: 0,
+      limit: GUEST_DAILY_LIMIT,
+      remaining: GUEST_DAILY_LIMIT,
+      windowDays: 1,
+      windowLabel: "per day",
+      label: "Guest",
+    };
+  }
 }
 
 export async function recordGuestCreditUsage(ipKey: string): Promise<void> {
-  const { supabase } = await import("@/lib/supabase");
-  const today = new Date().toISOString().split("T")[0];
+  try {
+    const { supabase } = await import("@/lib/supabase");
+    const today = new Date().toISOString().split("T")[0];
 
-  // Try to increment existing record
-  const { data } = await supabase
-    .from("guest_credits")
-    .select("id, count")
-    .eq("ip_address", ipKey)
-    .eq("used_date", today)
-    .maybeSingle();
+    // Try to increment existing record
+    const { data } = await supabase
+      .from("guest_credits")
+      .select("id, count")
+      .eq("ip_address", ipKey)
+      .eq("used_date", today)
+      .maybeSingle();
 
-  if (data) {
-    await supabase
-      .from("guest_credits")
-      .update({ count: (data.count || 0) + 1 })
-      .eq("id", data.id);
-  } else {
-    await supabase
-      .from("guest_credits")
-      .insert({ ip_address: ipKey, used_date: today, count: 1 });
+    if (data) {
+      await supabase
+        .from("guest_credits")
+        .update({ count: (data.count || 0) + 1 })
+        .eq("id", data.id);
+    } else {
+      await supabase
+        .from("guest_credits")
+        .insert({ ip_address: ipKey, used_date: today, count: 1 });
+    }
+  } catch (err) {
+    console.warn("Could not record guest credit usage:", err);
   }
 }
 

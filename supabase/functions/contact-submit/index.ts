@@ -22,26 +22,25 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    // Save to database
-    const { error } = await supabase
-      .from("contact_messages")
-      .insert({
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        subject: (subject || "General Inquiry").trim(),
-        message: message.trim(),
-        status: "new",
-      });
+    if (supabaseUrl && supabaseServiceKey) {
+      const supabase = createClient(supabaseUrl, supabaseServiceKey);
+      // Save to database
+      const { error } = await supabase
+        .from("contact_messages")
+        .insert({
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          subject: (subject || "General Inquiry").trim(),
+          message: message.trim(),
+          status: "new",
+        });
 
-    if (error) {
-      return new Response(JSON.stringify({ error: "Could not save message. Please try again." }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      if (error) {
+        console.warn("Could not save contact message to database:", error);
+      }
     }
 
     // Send email notification via Resend
@@ -92,6 +91,7 @@ Deno.serve(async (req: Request) => {
       message: "Message sent successfully.",
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (err) {
+    console.error("Contact submission failed:", err);
     return new Response(JSON.stringify({ error: "Something went wrong." }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

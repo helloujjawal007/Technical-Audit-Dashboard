@@ -1217,7 +1217,6 @@ async function auditSinglePage(
     const bgColorMatch = style.match(/background[^:]*:\s*(#[0-9a-fA-F]{3,6}|[a-z]+)/);
     if (colorMatch && bgColorMatch) {
       const fg = colorMatch[1].toLowerCase();
-      const bg = bgColorMatch[1].toLowerCase();
       if (fg === "#ccc" || fg === "#ddd" || fg === "#eee" || fg === "lightgray" || fg === "lightgrey") lowContrastCount++;
     }
   }
@@ -1703,16 +1702,20 @@ Deno.serve(async (req: Request) => {
     const auditId: string | undefined = body.auditId;
     const mode: string = body.mode || "single"; // "single" | "crawl" | "staging"
     const auditDepth: string = body.auditDepth || "deep"; // "deep" | "standard" | "basic"
-    const extractionFields: Record<string, boolean> | undefined = body.extractionFields;
-
-    const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl, supabaseServiceKey) : null;
 
     const targetUrl = normalizeUrl(rawUrl);
     const parsed = new URL(targetUrl);
     const origin = parsed.origin;
 
-    if (auditId) {
-      await supabase.from("seo_audits").update({ status: "running", updated_at: new Date().toISOString() }).eq("id", auditId);
+    if (auditId && supabase) {
+      try {
+        await supabase.from("seo_audits").update({ status: "running", updated_at: new Date().toISOString() }).eq("id", auditId);
+      } catch (err) {
+        console.warn("Could not update audit status to running:", err);
+      }
     }
 
     // Fetch robots.txt
@@ -1786,17 +1789,21 @@ Deno.serve(async (req: Request) => {
         result.score = Math.max(0, 100 - Math.min(Math.abs(deduction), 100));
       }
 
-      if (auditId) {
-        await supabase.from("seo_audits").update({
-          status: "completed",
-          score: result.score,
-          title: result.title,
-          description: result.description,
-          checks: result.checks as unknown as Record<string, unknown>,
-          result_data: result as unknown as Record<string, unknown>,
-          error: null,
-          updated_at: new Date().toISOString(),
-        }).eq("id", auditId);
+      if (auditId && supabase) {
+        try {
+          await supabase.from("seo_audits").update({
+            status: "completed",
+            score: result.score,
+            title: result.title,
+            description: result.description,
+            checks: result.checks as unknown as Record<string, unknown>,
+            result_data: result as unknown as Record<string, unknown>,
+            error: null,
+            updated_at: new Date().toISOString(),
+          }).eq("id", auditId);
+        } catch (dbErr) {
+          console.warn("Could not save audit to database:", dbErr);
+        }
       }
 
       return new Response(JSON.stringify(result), {
@@ -1804,8 +1811,10 @@ Deno.serve(async (req: Request) => {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Audit failed";
-      if (auditId) {
-        await supabase.from("seo_audits").update({ status: "failed", error: msg, updated_at: new Date().toISOString() }).eq("id", auditId);
+      if (auditId && supabase) {
+        try {
+          await supabase.from("seo_audits").update({ status: "failed", error: msg, updated_at: new Date().toISOString() }).eq("id", auditId);
+        } catch { /* ignore */ }
       }
       return new Response(JSON.stringify({ error: msg }), { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }

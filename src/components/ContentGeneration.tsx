@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { PenLine, FileText, Type, Hash, Loader2, Copy, Check, Sparkles, Edit3, Save } from "lucide-react";
+import { invokeEdgeFunction } from "@/lib/api";
 
 type ContentType = "page" | "blog";
 type SubType = "content" | "meta-title" | "meta-description";
@@ -37,30 +38,20 @@ export function ContentGeneration() {
     setIsEditing(false);
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/content-generate`, {
+      const data = await invokeEdgeFunction<{ content?: string }>("content-generate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
+        body: {
           contentType,
           subType,
           topic: topic.trim(),
           wordCount,
           keywords: keywords.trim(),
           tone,
-        }),
+        },
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Generation failed. Please try again.");
-      }
-
-      const data = await res.json();
-      setResult(data.content || "");
-      setEditableResult(data.content || "");
+      setResult(data?.content || "");
+      setEditableResult(data?.content || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     }

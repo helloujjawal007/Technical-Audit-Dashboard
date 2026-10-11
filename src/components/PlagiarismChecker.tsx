@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ShieldCheck, Loader2, AlertCircle, CheckCircle2, Copy as CopyIcon } from "lucide-react";
+import { invokeEdgeFunction } from "@/lib/api";
 
 export function PlagiarismChecker() {
   const [text, setText] = useState("");
@@ -22,21 +23,14 @@ export function PlagiarismChecker() {
     setResult(null);
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/plagiarism-check`, {
+      const data = await invokeEdgeFunction<{
+        similarityScore: number;
+        matchedSources: { url: string; snippet: string; similarity: number }[];
+        uniqueScore: number;
+      }>("plagiarism-check", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({ text: text.trim() }),
+        body: { text: text.trim() },
       });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Check failed. Please try again.");
-      }
-
-      const data = await res.json();
       setResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");

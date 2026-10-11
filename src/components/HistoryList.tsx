@@ -213,12 +213,11 @@ export function HistoryList({ audits, onSelect, selectedId, onDelete, onRefresh 
                     </p>
                   </div>
                   <button
-                    onClick={async (event) => {
+                    onClick={(event) => {
                       event.stopPropagation();
                       for (const a of domainAudits) {
-                        await supabase.from("seo_audits").delete().eq("id", a.id);
+                        onDelete(a.id);
                       }
-                      onDelete(latest.id);
                     }}
                     className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-50 transition-all"
                     aria-label="Delete audit"

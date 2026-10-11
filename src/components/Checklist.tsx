@@ -53,12 +53,14 @@ export function Checklist({ checks, auditId }: ChecklistProps) {
     });
   };
 
+  const safeChecks = checks || [];
+
   const grouped = CATEGORY_ORDER.map((cat) => ({
     category: cat,
-    items: checks.filter((c) => c.category === cat),
+    items: safeChecks.filter((c) => c.category === cat),
   })).filter((g) => g.items.length > 0);
 
-  const actionableChecks = checks.filter((c) => c.status === "fail" || c.status === "warn");
+  const actionableChecks = safeChecks.filter((c) => c.status === "fail" || c.status === "warn");
   const resolvedCount = actionableChecks.filter((c) => resolved.has(c.id)).length;
   const progressPct = actionableChecks.length > 0 ? Math.round((resolvedCount / actionableChecks.length) * 100) : 0;
 

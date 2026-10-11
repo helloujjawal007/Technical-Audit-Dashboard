@@ -21,15 +21,23 @@ Deno.serve(async (req: Request) => {
 
     const cleanEmail = email.trim().toLowerCase();
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      // In development or when service role key is not configured
+      return new Response(JSON.stringify({
+        success: true,
+        message: "If an account exists, a reset link has been sent.",
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Use the admin API to send a recovery email (password reset)
     // generateLink with type "recovery" sends the user an email with a link
     // that contains a recovery token in the URL hash
-    const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
+    const { error: linkError } = await supabase.auth.admin.generateLink({
       type: "recovery",
       email: cleanEmail,
     });
@@ -51,6 +59,7 @@ Deno.serve(async (req: Request) => {
       message: "Password reset email sent. Check your inbox.",
     }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (err) {
+    console.error("Password reset failed:", err);
     return new Response(JSON.stringify({ error: "Something went wrong." }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

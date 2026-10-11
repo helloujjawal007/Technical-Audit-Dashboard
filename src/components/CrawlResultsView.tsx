@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, ExternalLink, Search, Pause, Play, ListFilter, AlertTriangle, Link2 } from "lucide-react";
+import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, ExternalLink, Search, Pause, ListFilter, AlertTriangle, Link2 } from "lucide-react";
 import type { CrawlPageResult, AuditResult, CheckResult } from "@/types";
 import { scoreColor, CATEGORY_META, STATUS_META } from "@/types";
 import { generateCrawlCsv, downloadCsv, downloadExcel, generateIssueCsv } from "@/lib/csv";

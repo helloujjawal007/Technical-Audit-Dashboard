@@ -163,7 +163,7 @@ export function downloadExcel(filename: string, rows: string[][]): void {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;");
+    .replace(/"/g, "&quot;");
   const table = rows.map((row, rowIndex) =>
     `<tr>${row.map((cell) => { const tag = rowIndex === 0 ? "th" : "td"; return `<${tag}>${escapeHtml(cell)}</${tag}>`; }).join("")}</tr>`
   ).join("");
