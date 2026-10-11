@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+  body { background: white; }
+  .print\:hidden { display: none !important; }
+  main { max-width: 100% !important; padding: 0 !important; }
+  aside { display: none !important; }
+  .overflow-x-auto { overflow: visible !important; }
+  .max-h-96, .max-h-32 { max-height: none !important; }
+}

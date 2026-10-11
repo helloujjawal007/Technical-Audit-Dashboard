@@ -1,0 +1,17 @@
+[functions.seo-audit]
+verify_jwt = false
+
+[functions.password-reset]
+verify_jwt = false
+
+[functions.content-generate]
+verify_jwt = false
+
+[functions.plagiarism-check]
+verify_jwt = false
+
+[functions.contact-submit]
+verify_jwt = false
+
+[functions.get-ip]
+verify_jwt = false
