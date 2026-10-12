@@ -1,9 +1,16 @@
 {
   "rewrites": [
     {
+      "source": "/functions/v1/seo-audit",
+      "destination": "/api/seo-audit"
+    },
+    {
+      "source": "/functions/v1/get-ip",
+      "destination": "/api/get-ip"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
   ]
 }
-

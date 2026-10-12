@@ -1,6 +1,6 @@
 /**
  * API utility for invoking Supabase edge functions with automatic
- * local development fallback if the remote function is not deployed (HTTP 404).
+ * same-origin fallback if the remote function is not deployed or blocked by CORS.
  */
 
 import { supabaseUrl, supabaseAnonKey } from "@/lib/supabase";
@@ -10,6 +10,7 @@ interface InvokeOptions {
   body?: unknown;
   headers?: Record<string, string>;
 }
+
 export async function invokeEdgeFunction<T = unknown>(
   functionName: string,
   options: InvokeOptions = {}
@@ -42,11 +43,11 @@ export async function invokeEdgeFunction<T = unknown>(
         body: options.body ? JSON.stringify(options.body) : undefined,
       });
 
-      // If the function returned 404 (edge function not deployed yet)
-      // and we are running in local dev / browser on the same host, fall back to local dev server
-      if (res.status === 404 && (import.meta.env.DEV || window.location.hostname === "localhost")) {
+      // If the function returned 404 (edge function not deployed yet to Supabase)
+      // seamlessly fall back to same-origin handler
+      if (res.status === 404) {
         console.warn(
-          `[API] Supabase function "${functionName}" returned 404 (not deployed to Supabase). Falling back to local backend handler.`
+          `[API] Supabase function "${functionName}" returned 404 (not deployed). Falling back to same-origin handler.`
         );
         return await callLocalEndpoint<T>(localEndpoint, method, options);
       }
@@ -62,21 +63,17 @@ export async function invokeEdgeFunction<T = unknown>(
 
       return (await res.json()) as T;
     } catch (err: unknown) {
-      // If network error occurred (e.g. CORS or offline) and we're in local dev, try local
-      if (
-        (import.meta.env.DEV || window.location.hostname === "localhost") &&
-        err instanceof TypeError
-      ) {
-        console.warn(
-          `[API] Network error reaching "${remoteEndpoint}". Falling back to local backend handler.`
-        );
-        return await callLocalEndpoint<T>(localEndpoint, method, options);
-      }
-      throw err;
+      // If network error occurred (e.g. CORS preflight failed or function down),
+      // seamlessly fall back to same-origin handler
+      console.warn(
+        `[API] Remote function "${functionName}" unreachable. Falling back to same-origin handler.`,
+        err
+      );
+      return await callLocalEndpoint<T>(localEndpoint, method, options);
     }
   }
 
-  // No remote endpoint configured — call local directly
+  // No remote endpoint configured — call same-origin directly
   return await callLocalEndpoint<T>(localEndpoint, method, options);
 }
 
@@ -85,6 +82,15 @@ async function callLocalEndpoint<T>(
   method: string,
   options: InvokeOptions
 ): Promise<T> {
+  // Graceful fallback for get-ip if endpoint unreachable
+  if (endpoint.includes("get-ip")) {
+    try {
+      const res = await fetch(endpoint, { method, headers: options.headers });
+      if (res.ok) return (await res.json()) as T;
+    } catch { /* fallback to random client id */ }
+    return { ip: "guest-" + Math.floor(Math.random() * 1000000) } as T;
+  }
+
   const headers: Record<string, string> = { ...options.headers };
   if (options.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
@@ -101,7 +107,7 @@ async function callLocalEndpoint<T>(
     throw new Error(
       errBody.error ||
       errBody.message ||
-      `Local backend request to ${endpoint} failed (${res.status})`
+      `Backend request to ${endpoint} failed (${res.status})`
     );
   }
 
