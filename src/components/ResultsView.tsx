@@ -57,34 +57,45 @@ export function ResultsView({ result, url, auditId }: ResultsViewProps) {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Score + summary header */}
-      <div className="flex flex-col sm:flex-row gap-6 items-center sm:items-start">
-        <ScoreGauge score={result.score} />
-        <div className="flex-1 w-full">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatCard label="Passed" value={counts.pass} color="text-emerald-600" bg="bg-emerald-50" icon={CheckCircle2} />
-            <StatCard label="Warnings" value={counts.warn} color="text-amber-600" bg="bg-amber-50" icon={AlertTriangle} />
-            <StatCard label="Failed" value={counts.fail} color="text-rose-600" bg="bg-rose-50" icon={XCircle} />
-            <StatCard label="Info" value={counts.info} color="text-sky-600" bg="bg-sky-50" icon={Info} />
-          </div>
-          <div className="mt-4 space-y-2">
-            <InfoRow label="Page Title" value={result.title} />
-            <InfoRow label="Description" value={result.description} />
-            <InfoRow label="Audited URL" value={url} mono />
-          </div>
-          <div className="mt-3 flex gap-2 flex-wrap items-center">
-            {result.hasTOC && <Badge label="TOC" color="bg-blue-50 text-blue-700" />}
-            {result.hasFAQ && <Badge label="FAQ" color="bg-violet-50 text-violet-700" />}
-            {result.hasInfographic && <Badge label="Infographic" color="bg-emerald-50 text-emerald-700" />}
-            {(result.schema || []).length > 0 && <Badge label={`${result.schema.length} Schema`} color="bg-amber-50 text-amber-700" />}
-            <button
-              onClick={handleExport}
-              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 font-medium transition-colors print:hidden"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Export Report
-            </button>
+    <div className="space-y-6 animate-fade-in">
+      {/* Score + summary hero card */}
+      <div className="p-6 rounded-2xl bg-gradient-to-b from-white via-white to-slate-50/50 border border-slate-200/80 shadow-sm">
+        <div className="flex flex-col md:flex-row gap-6 items-center md:items-start">
+          <ScoreGauge score={result.score} size={170} />
+
+          <div className="flex-1 w-full space-y-4">
+            {/* Stat Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <StatCard label="Passed" value={counts.pass} color="text-emerald-700" bg="bg-emerald-50/80 border border-emerald-200/60" icon={CheckCircle2} />
+              <StatCard label="Warnings" value={counts.warn} color="text-amber-700" bg="bg-amber-50/80 border border-amber-200/60" icon={AlertTriangle} />
+              <StatCard label="Failed" value={counts.fail} color="text-rose-700" bg="bg-rose-50/80 border border-rose-200/60" icon={XCircle} />
+              <StatCard label="Notice" value={counts.info} color="text-sky-700" bg="bg-sky-50/80 border border-sky-200/60" icon={Info} />
+            </div>
+
+            {/* Target info */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/70 space-y-1.5 text-xs">
+              <InfoRow label="Title" value={result.title} />
+              <InfoRow label="Description" value={result.description} />
+              <InfoRow label="Audited URL" value={url} mono />
+            </div>
+
+            {/* Tags & Export Toolbar */}
+            <div className="flex gap-2 flex-wrap items-center justify-between pt-1">
+              <div className="flex gap-1.5 flex-wrap items-center">
+                {result.hasTOC && <Badge label="TOC Active" color="bg-blue-50 text-blue-700 border border-blue-200" />}
+                {result.hasFAQ && <Badge label="FAQ Schema" color="bg-violet-50 text-violet-700 border border-violet-200" />}
+                {result.hasInfographic && <Badge label="Infographics" color="bg-emerald-50 text-emerald-700 border border-emerald-200" />}
+                {(result.schema || []).length > 0 && <Badge label={`${result.schema.length} Schemas`} color="bg-amber-50 text-amber-700 border border-amber-200" />}
+              </div>
+
+              <button
+                onClick={handleExport}
+                className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export Audit Report</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -96,15 +107,30 @@ export function ResultsView({ result, url, auditId }: ResultsViewProps) {
             const cs = result.categoryScores.find((c) => c.category === cat);
             if (!cs) return null;
             const meta = CATEGORY_META[cat as CheckCategory];
-            const scoreClass = cs.score >= 80 ? "text-emerald-600" : cs.score >= 50 ? "text-amber-600" : "text-rose-600";
+            const scoreClass =
+              cs.score >= 80 ? "text-emerald-600" : cs.score >= 50 ? "text-amber-600" : "text-rose-600";
+            const barGradient =
+              cs.score >= 80 ? "bg-emerald-500" : cs.score >= 50 ? "bg-amber-500" : "bg-rose-500";
+
             return (
-              <div key={cat} className="rounded-xl border border-slate-200 bg-white p-3 text-center">
-                <p className="text-xs text-slate-400 mb-1">{meta.label}</p>
-                <p className={`text-2xl font-bold ${scoreClass}`}>{cs.score}</p>
-                <div className="flex justify-center gap-1.5 mt-1.5 text-[10px]">
-                  {cs.fail > 0 && <span className="text-rose-500">{cs.fail}F</span>}
-                  {cs.warn > 0 && <span className="text-amber-500">{cs.warn}W</span>}
-                  {cs.pass > 0 && <span className="text-emerald-500">{cs.pass}P</span>}
+              <div
+                key={cat}
+                className="rounded-2xl border border-slate-200/90 bg-white p-3.5 text-center shadow-xs hover:shadow-sm transition-all"
+              >
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1 truncate">
+                  {meta.label}
+                </p>
+                <p className={`text-2xl font-extrabold tracking-tight ${scoreClass}`}>{cs.score}</p>
+                <div className="w-full h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden">
+                  <div
+                    className={`h-full ${barGradient} rounded-full transition-all duration-700`}
+                    style={{ width: `${cs.score}%` }}
+                  />
+                </div>
+                <div className="flex justify-center gap-2 mt-2 text-[10px] font-bold">
+                  {cs.fail > 0 && <span className="text-rose-500">{cs.fail} Fail</span>}
+                  {cs.warn > 0 && <span className="text-amber-500">{cs.warn} Warn</span>}
+                  {cs.pass > 0 && <span className="text-emerald-500">{cs.pass} Pass</span>}
                 </div>
               </div>
             );
@@ -112,22 +138,23 @@ export function ResultsView({ result, url, auditId }: ResultsViewProps) {
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-1 overflow-x-auto pb-1 border-b border-slate-100 print:hidden">
+      {/* Tabs - Modern Pills */}
+      <div className="flex gap-1.5 overflow-x-auto pb-1.5 border-b border-slate-200/80 print:hidden scrollbar-none">
         {TABS.filter((t) => t.id !== "custom-audit" || Boolean(result.customAudit)).map((t) => {
           const Icon = t.icon;
+          const isActive = tab === t.id;
           return (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`inline-flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${
-                tab === t.id
-                  ? "border-blue-600 text-blue-600"
-                  : "border-transparent text-slate-500 hover:text-slate-700"
+              className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer active:scale-95 ${
+                isActive
+                  ? "bg-teal-600 text-white shadow-xs shadow-teal-600/20"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
               }`}
             >
-              <Icon className="w-4 h-4" />
-              {t.label}
+              <Icon className={`w-3.5 h-3.5 ${isActive ? "text-white" : "text-slate-400"}`} />
+              <span>{t.label}</span>
             </button>
           );
         })}

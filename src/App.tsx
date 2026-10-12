@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, AlertCircle, Loader2, History, ChevronDown, ChevronUp, Ghost } from "lucide-react";
+import { AlertCircle, Loader2, History, Ghost } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
 import { invokeEdgeFunction } from "@/lib/api";
@@ -10,7 +10,12 @@ import { ResultsView } from "@/components/ResultsView";
 import { CrawlResultsView } from "@/components/CrawlResultsView";
 import { AllHistoryModal } from "@/components/AllHistoryModal";
 import { CreditDisplay } from "@/components/CreditDisplay";
-import { NavBar } from "@/components/NavBar";
+import { NavBar, type NavPage } from "@/components/NavBar";
+import { ModernScanningState } from "@/components/ModernScanningState";
+import { ReadyHeroState } from "@/components/ReadyHeroState";
+import { HistoryPageView } from "@/components/HistoryPageView";
+import { ComparePageView } from "@/components/ComparePageView";
+import { SettingsPageView } from "@/components/SettingsPageView";
 import { getCreditUsage, getAllCreditUsage, recordCreditUsage, canStartAudit, getGuestCreditUsage, recordGuestCreditUsage, canStartGuestAudit } from "@/lib/credits";
 import type { AuditResult, AuditRow, AuditMode, AuditDepth, CrawlPageResult, CustomExtractionFields } from "@/types";
 
@@ -23,6 +28,7 @@ function normalizeUrl(raw: string): string {
 
 function App() {
   const { user, loading: authLoading, signOut, guest, signInAsGuest, exitGuest, subscription, isRecovery, clearRecovery } = useAuth();
+  const [activeNav, setActiveNav] = useState<NavPage>("audit");
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [selected, setSelected] = useState<AuditRow | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -41,9 +47,7 @@ function App() {
   const cancelRef = useRef(false);
   const [view, setView] = useState<"single" | "crawl">("single");
 
-  const [auditStarted, setAuditStarted] = useState(false);
   const [showAllHistory, setShowAllHistory] = useState(false);
-  const [historyExpanded, setHistoryExpanded] = useState(true);
   const [creditError, setCreditError] = useState<string | null>(null);
   const [guestCredits, setGuestCredits] = useState<number | null>(null);
 
@@ -122,7 +126,6 @@ function App() {
     setError(null);
     setResult(null);
     setSelected(null);
-    setAuditStarted(true);
     setPaused(false);
     pauseRef.current = false;
     cancelRef.current = false;
@@ -317,7 +320,6 @@ function App() {
     setError(null);
     setResult(null);
     setView("single");
-    setAuditStarted(true);
 
     if (audit.status === "completed" && audit.result_data) {
       setResult(audit.result_data);
@@ -389,177 +391,202 @@ function App() {
   const isGuest = Boolean(!user && guest);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       <NavBar
         userName={userName}
         isGuest={isGuest}
         isAdmin={subscription?.tier === "admin"}
         guestCredits={guestCredits}
+        activeNav={activeNav}
+        onNavChange={setActiveNav}
         onSignOut={signOut}
         onExitGuest={exitGuest}
       />
 
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Page 1: History & Reports */}
+        {activeNav === "history" && (
+          <HistoryPageView
+            audits={audits}
+            onSelectAudit={(a) => {
+              handleSelect(a);
+              setActiveNav("audit");
+            }}
+            onDeleteAudit={handleDelete}
+            onStartNewAudit={() => setActiveNav("audit")}
+          />
+        )}
+
+        {/* Page 2: Compare & Diff */}
+        {activeNav === "compare" && (
+          <ComparePageView
+            audits={audits}
+            onSelectAudit={(a) => {
+              handleSelect(a);
+              setActiveNav("audit");
+            }}
+          />
+        )}
+
+        {/* Page 3: Settings & Subscription */}
+        {activeNav === "settings" && <SettingsPageView />}
+
+        {/* Page 4: Primary Audit Studio */}
+        {activeNav === "audit" && (
+          <div className="space-y-6">
             <section className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
               {/* Audit form card */}
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-                <h2 className="text-base font-semibold text-slate-800 mb-4">Start a New Audit</h2>
-                <AuditForm onAudit={handleAudit} loading={loading} paused={paused} onPauseToggle={() => {
-                  if (paused) {
-                    setPaused(false);
-                    pauseRef.current = false;
-                  } else {
-                    setPaused(true);
-                    pauseRef.current = true;
-                  }
-                }} />
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-xs">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-base font-extrabold text-slate-800 tracking-tight">
+                    Launch Website Audit
+                  </h2>
+                  <span className="text-xs font-semibold text-teal-700 bg-teal-50 px-2.5 py-1 rounded-full border border-teal-200/50">
+                    Engine Ready
+                  </span>
+                </div>
+
+                <AuditForm
+                  onAudit={handleAudit}
+                  loading={loading}
+                  paused={paused}
+                  onPauseToggle={() => {
+                    if (paused) {
+                      setPaused(false);
+                      pauseRef.current = false;
+                    } else {
+                      setPaused(true);
+                      pauseRef.current = true;
+                    }
+                  }}
+                />
+
                 {creditError && (
-                  <div className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-amber-50 text-amber-700 text-sm">
-                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div className="mt-4 flex items-start gap-2.5 p-3.5 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 text-xs font-medium animate-fade-in">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600" />
                     <span>{creditError}</span>
                   </div>
                 )}
+
                 {error && view === "single" && (
-                  <div className="mt-4 flex items-start gap-2 p-3 rounded-lg bg-rose-50 text-rose-700 text-sm">
-                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div className="mt-4 flex items-start gap-2.5 p-3.5 rounded-xl bg-rose-50 text-rose-800 border border-rose-200 text-xs font-medium animate-fade-in">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-600" />
                     <span>{error}</span>
                   </div>
                 )}
               </div>
 
-              {/* Right sidebar: Credits + History */}
+              {/* Right sidebar: Credits + Recent Activity */}
               <aside className="space-y-4">
                 {!isGuest && <CreditDisplay />}
+
                 {isGuest && (
-                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="p-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center">
-                          <Ghost className="w-4 h-4 text-teal-500" />
+                  <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+                    <div className="p-4 space-y-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-teal-50 flex items-center justify-center text-teal-600">
+                          <Ghost className="w-4 h-4" />
                         </div>
                         <div>
-                          <p className="text-sm font-semibold text-slate-700">Guest Mode</p>
-                          <p className="text-xs text-slate-400">Limited daily audits</p>
+                          <p className="text-xs font-bold text-slate-800">Guest Pass Active</p>
+                          <p className="text-[11px] text-slate-400">Daily IP allowance</p>
                         </div>
                       </div>
+
                       {guestCredits !== null && (
-                        <div className="mt-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-slate-500">Credits remaining</span>
-                            <span className="text-xs font-semibold text-teal-600">{guestCredits}</span>
-                          </div>
+                        <div className="p-2.5 rounded-xl bg-teal-50/50 border border-teal-100 flex items-center justify-between">
+                          <span className="text-xs text-slate-600 font-medium">Credits Left:</span>
+                          <span className="text-xs font-extrabold text-teal-700">{guestCredits} / 5</span>
                         </div>
                       )}
-                      <p className="text-xs text-slate-400 mt-2">Sign up for a free account to get more credits and save your audit history.</p>
+
+                      <p className="text-[11px] text-slate-400 leading-snug">
+                        Create an account to save full audit reports and unlock deep parallel scanning.
+                      </p>
                     </div>
                   </div>
                 )}
+
                 {!isGuest && (
-                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <button
-                      onClick={() => setHistoryExpanded(!historyExpanded)}
-                      className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition-colors"
-                    >
+                  <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+                    <div className="flex items-center justify-between p-4 border-b border-slate-100">
                       <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center">
-                          <History className="w-4 h-4 text-teal-500" />
+                        <div className="w-7 h-7 rounded-lg bg-teal-50 flex items-center justify-center text-teal-600">
+                          <History className="w-3.5 h-3.5" />
                         </div>
-                        <div className="text-left">
-                          <p className="text-sm font-semibold text-slate-700">Audit History</p>
-                          <p className="text-xs text-slate-400">{audits.length} audits</p>
+                        <p className="text-xs font-bold text-slate-800">Recent Audits</p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveNav("history")}
+                        className="text-xs font-bold text-teal-600 hover:text-teal-700 transition-colors cursor-pointer"
+                      >
+                        View All ({audits.length})
+                      </button>
+                    </div>
+
+                    <div className="p-3">
+                      {loadingHistory ? (
+                        <div className="flex items-center justify-center py-6">
+                          <Loader2 className="w-5 h-5 text-slate-300 animate-spin" />
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          onClick={(e) => { e.stopPropagation(); setShowAllHistory(true); }}
-                          className="inline-flex items-center gap-1 text-xs text-teal-600 hover:text-teal-700 font-medium transition-colors cursor-pointer"
-                        >
-                          View All
-                        </span>
-                        {historyExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
-                      </div>
-                    </button>
-                    {historyExpanded && (
-                      <div className="px-4 pb-4 border-t border-slate-100">
-                        {loadingHistory ? (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="w-6 h-6 text-slate-300 animate-spin" />
-                          </div>
-                        ) : (
-                          <HistoryList
-                            audits={audits}
-                            onSelect={handleSelect}
-                            selectedId={selected?.id || null}
-                            onDelete={handleDelete}
-                            onRefresh={fetchAudits}
-                          />
-                        )}
-                      </div>
-                    )}
+                      ) : (
+                        <HistoryList
+                          audits={audits}
+                          onSelect={handleSelect}
+                          selectedId={selected?.id || null}
+                          onDelete={handleDelete}
+                          onRefresh={fetchAudits}
+                        />
+                      )}
+                    </div>
                   </div>
                 )}
               </aside>
             </section>
 
-            {/* Section 2: Results */}
-            {auditStarted && (
-              <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm min-h-[500px]">
-                {view === "crawl" && (crawlPages.length > 0 || isCrawling || error) ? (
-                  <CrawlResultsView
-                    pages={crawlPages}
-                    baseUrl={crawlBaseUrl}
-                    sitemapUrl={crawlSitemapUrl}
-                    crawlProgress={crawlProgress}
-                    isCrawling={isCrawling}
-                    paused={paused}
-                  />
-                ) : result && selected ? (
-                  <ResultsView result={result} url={selected.url} auditId={selected.id} />
-                ) : loading && view === "single" ? (
-                  <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                    <Loader2 className="w-10 h-10 animate-spin mb-4 text-teal-500" />
-                    <p className="text-sm font-medium text-slate-600">Analyzing your site...</p>
-                    <p className="text-xs text-slate-400 mt-1">This takes a few seconds while we fetch and parse the page.</p>
+            {/* Section 2: Results / Scanner / Ready Hero */}
+            <section className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-8 shadow-xs min-h-[460px]">
+              {loading ? (
+                <ModernScanningState
+                  url={selected?.url || (view === "crawl" ? crawlBaseUrl : "")}
+                  isCrawl={view === "crawl"}
+                />
+              ) : view === "crawl" && (crawlPages.length > 0 || isCrawling || error) ? (
+                <CrawlResultsView
+                  pages={crawlPages}
+                  baseUrl={crawlBaseUrl}
+                  sitemapUrl={crawlSitemapUrl}
+                  crawlProgress={crawlProgress}
+                  isCrawling={isCrawling}
+                  paused={paused}
+                />
+              ) : result && selected ? (
+                <ResultsView result={result} url={selected.url} auditId={selected.id} />
+              ) : error ? (
+                <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-in">
+                  <div className="w-14 h-14 rounded-2xl bg-rose-50 border border-rose-200/80 flex items-center justify-center text-rose-500 mb-3.5">
+                    <AlertCircle className="w-7 h-7" />
                   </div>
-                ) : loading && view === "crawl" ? (
-                  <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                    <Loader2 className="w-10 h-10 animate-spin mb-4 text-teal-500" />
-                    <p className="text-sm font-medium text-slate-600">Reading sitemap...</p>
-                    <p className="text-xs text-slate-400 mt-1">Traversing sitemap layers to discover all pages.</p>
-                  </div>
-                ) : selected && !result && selected.status === "running" ? (
-                  <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                    <Loader2 className="w-10 h-10 animate-spin mb-4 text-teal-500" />
-                    <p className="text-sm font-medium text-slate-600">Audit in progress...</p>
-                  </div>
-                ) : error && view === "single" && selected ? (
-                  <div className="flex flex-col items-center justify-center py-20 text-center">
-                    <AlertCircle className="w-10 h-10 text-rose-400 mb-3" />
-                    <p className="text-sm font-medium text-slate-700">{error}</p>
-                    <p className="text-xs text-slate-400 mt-1">Try running the audit again.</p>
-                  </div>
-                ) : error && view === "crawl" ? (
-                  <div className="flex flex-col items-center justify-center py-20 text-center">
-                    <AlertCircle className="w-10 h-10 text-rose-400 mb-3" />
-                    <p className="text-sm font-medium text-slate-700">{error}</p>
-                    <p className="text-xs text-slate-400 mt-1">Make sure your site has a sitemap.xml or sitemap_index.xml file.</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-20 text-center">
-                    <div className="w-16 h-16 rounded-2xl bg-teal-50 flex items-center justify-center mb-4">
-                      <Search className="w-8 h-8 text-teal-500" />
-                    </div>
-                    <h2 className="text-lg font-semibold text-slate-700">Ready to audit</h2>
-                    <p className="text-sm text-slate-400 mt-1 max-w-sm">
-                      Enter a URL above to run a complete SEO audit. Results show every affected URL, issue explanation, and recommended fix.
-                    </p>
-                  </div>
-                )}
-              </section>
-            )}
-      </div>
+                  <p className="text-base font-bold text-slate-800">{error}</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                    {view === "crawl"
+                      ? "Make sure your domain has an accessible sitemap.xml file."
+                      : "Please verify the URL is live and try again."}
+                  </p>
+                </div>
+              ) : (
+                <ReadyHeroState
+                  onSelectSample={(sampleUrl) => handleAudit(sampleUrl, "single", "standard")}
+                />
+              )}
+            </section>
+          </div>
+        )}
+      </main>
 
-      {/* All History Modal */}
+      {/* All History Modal Fallback */}
       {!isGuest && (
         <AllHistoryModal
           open={showAllHistory}

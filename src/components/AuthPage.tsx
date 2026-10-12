@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ScanSearch,
   Mail,
@@ -19,7 +19,6 @@ import {
   RotateCw,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { invokeEdgeFunction } from "@/lib/api";
 
 type AuthStep = "choose" | "signup" | "signin" | "forgot" | "reset";
 
@@ -63,6 +62,7 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showNewPassword, setShowNewPassword] = useState(false);
+  const resetRequestInFlight = useRef(false);
 
   const [loading, setLoading] = useState(false);
   const [magicLoading, setMagicLoading] = useState(false);
@@ -253,6 +253,7 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (resetRequestInFlight.current) return;
 
     const cleanEmail = normalizeAuthEmail(email);
 
@@ -261,35 +262,35 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
       return;
     }
 
+    resetRequestInFlight.current = true;
     setLoading(true);
     setError(null);
     setInfo(null);
 
     try {
-      // 1. Request recovery email & token via Supabase Auth
-      await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
         redirectTo: `${window.location.origin}/#type=recovery`,
       });
 
-      // 2. Also request via edge function / dev backend
-      const res = await invokeEdgeFunction<{ success?: boolean; token?: string; otp?: string; message?: string }>("password-reset", {
-        method: "POST",
-        body: { email: cleanEmail },
-      });
-
-      // If in local dev and token is returned directly in response
-      if (res?.token || res?.otp) {
-        setToken(res.token || res.otp || "");
+      if (resetError) {
+        throw resetError;
       }
 
-      setInfo(`Verification code & reset link sent to ${cleanEmail}. Enter the code below or click the link in your email.`);
+      setToken("");
+      setInfo(`If an account exists for ${cleanEmail}, a password reset email has been sent. Check your inbox and spam folder.`);
       setStep("reset");
     } catch (err) {
       console.error("Password reset error:", err);
-      setError("Could not send reset code. Please check your email and try again.");
+      const message = err instanceof Error ? err.message : "";
+      setError(
+        /rate limit|too many requests|\b429\b/i.test(message)
+          ? "Password reset emails are temporarily rate-limited. Please wait before trying again. For reliable delivery, configure custom SMTP in your Supabase Auth settings."
+          : "Could not send the password reset email. Please check the address and try again."
+      );
+    } finally {
+      resetRequestInFlight.current = false;
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   const handleResetPassword = async (e: React.FormEvent) => {
@@ -321,7 +322,6 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
 
       // If user entered a verification token/code
       if (trimmedToken) {
-        // Try verifying OTP with Supabase Auth (type: 'recovery')
         const { error: otpError } = await supabase.auth.verifyOtp({
           email: cleanEmail,
           token: trimmedToken,
@@ -329,36 +329,16 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
         });
 
         if (otpError) {
-          // Check with dev backend / edge function fallback
-          const devVerify = await invokeEdgeFunction<{ success?: boolean; error?: string }>("password-reset", {
-            method: "POST",
-            body: { email: cleanEmail, token: trimmedToken, newPassword },
-          });
-
-          if (!devVerify?.success) {
-            setError(otpError.message || devVerify?.error || "Invalid or expired verification code.");
-            setResetLoading(false);
-            return;
-          }
+          setError(otpError.message || "Invalid or expired verification code.");
+          setResetLoading(false);
+          return;
         }
       }
 
       // Update password for authenticated recovery session
       const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
 
-      if (updateError && trimmedToken) {
-        // Also fallback to edge function if user session wasn't active
-        const devVerify = await invokeEdgeFunction<{ success?: boolean; error?: string }>("password-reset", {
-          method: "POST",
-          body: { email: cleanEmail, token: trimmedToken, newPassword },
-        });
-
-        if (!devVerify?.success) {
-          setError(updateError.message);
-          setResetLoading(false);
-          return;
-        }
-      } else if (updateError && !trimmedToken) {
+      if (updateError) {
         setError(updateError.message || "Please enter the verification code sent to your email.");
         setResetLoading(false);
         return;
@@ -666,7 +646,7 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
               <h2 className="text-lg font-semibold text-center text-slate-800">Forgot Password</h2>
 
               <p className="text-sm text-slate-500 text-center">
-                Enter your email address or username. We will send you a temporary verification token and a recovery link.
+                Enter your email address or username. We will send a recovery code or password reset link to your email.
               </p>
 
               <div>
@@ -704,7 +684,7 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
                 className="w-full rounded-xl bg-teal-600 text-white py-3.5 font-medium hover:bg-teal-700 disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-                Send Reset Token & Link
+                Send Reset Email
               </button>
 
               <div className="text-center">

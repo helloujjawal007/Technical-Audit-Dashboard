@@ -13,69 +13,40 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { email, token, newPassword } = body;
+    const { email, redirectTo } = body;
 
-    if (!email) {
+    if (typeof email !== "string" || !email.trim()) {
       return new Response(JSON.stringify({ error: "Email is required." }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanEmail = email.trim().toLowerCase();
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      // In development or when service role key is not configured
-      return new Response(JSON.stringify({
-        success: true,
-        message: "If an account exists, a reset code and link have been generated.",
-      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("Password reset email is unavailable: Supabase URL or anon key is not configured.");
+      return new Response(JSON.stringify({ error: "Password reset is temporarily unavailable." }), {
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // If verifying a token and updating password via admin API
-    if (token && newPassword) {
-      const { data: userList } = await supabase.auth.admin.listUsers();
-      const targetUser = userList?.users?.find(
-        (u) => u.email?.toLowerCase() === cleanEmail
-      );
-
-      if (targetUser) {
-        const { error: updateErr } = await supabase.auth.admin.updateUserById(
-          targetUser.id,
-          { password: newPassword }
-        );
-        if (updateErr) {
-          return new Response(JSON.stringify({ error: updateErr.message }), {
-            status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-        return new Response(JSON.stringify({
-          success: true,
-          message: "Password updated successfully.",
-        }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-    }
-
-    // Generate link and OTP code
-    const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
-      type: "recovery",
-      email: cleanEmail,
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: typeof redirectTo === "string" ? redirectTo : undefined,
     });
 
-    if (linkError) {
-      return new Response(JSON.stringify({
-        success: true,
-        message: "If an account exists, a reset code and link have been generated.",
-      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (error) {
+      console.error("Password reset email request failed:", error.message);
+      return new Response(JSON.stringify({ error: "Could not send the password reset email." }), {
+        status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     return new Response(JSON.stringify({
       success: true,
-      message: "Password reset code sent. Check your inbox.",
-      otp: linkData?.properties?.email_otp,
+      message: "If an account exists, a password reset email has been sent.",
     }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (err) {
     console.error("Password reset error:", err);
