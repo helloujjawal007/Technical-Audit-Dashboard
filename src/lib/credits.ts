@@ -1,3 +1,5 @@
+import { supabase } from "@/lib/supabase";
+
 export interface CreditLimit {
   label: string;
   limit: number;
@@ -28,7 +30,6 @@ export async function getCreditUsage(
   userId: string,
   auditType: string
 ): Promise<CreditUsage> {
-  const supabase = (await import("@/lib/supabase")).supabase;
   const { data: subscription } = await supabase
     .from("user_subscriptions")
     .select("tier")
@@ -88,7 +89,7 @@ export async function recordCreditUsage(
   urlCount: number = 1
 ): Promise<void> {
   try {
-    await (await import("@/lib/supabase")).supabase
+    await supabase
       .from("credit_usage")
       .insert({ user_id: userId, audit_type: auditType, url_count: urlCount });
   } catch (err) {
@@ -114,7 +115,6 @@ export function canStartAudit(
 
 export async function getGuestCreditUsage(ipKey: string): Promise<CreditUsage> {
   try {
-    const { supabase } = await import("@/lib/supabase");
     const today = new Date().toISOString().split("T")[0];
 
     const { data } = await supabase
@@ -147,7 +147,6 @@ export async function getGuestCreditUsage(ipKey: string): Promise<CreditUsage> {
 
 export async function recordGuestCreditUsage(ipKey: string): Promise<void> {
   try {
-    const { supabase } = await import("@/lib/supabase");
     const today = new Date().toISOString().split("T")[0];
 
     // Try to increment existing record
