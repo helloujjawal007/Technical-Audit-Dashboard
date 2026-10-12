@@ -103,8 +103,8 @@ export function Checklist({ checks, auditId }: ChecklistProps) {
       // Text search
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
-        const matchesLabel = c.label.toLowerCase().includes(q);
-        const matchesDetail = c.detail.toLowerCase().includes(q);
+        const matchesLabel = (c.label || "").toLowerCase().includes(q);
+        const matchesDetail = (c.detail || "").toLowerCase().includes(q);
         const matchesVal = (c.value || "").toLowerCase().includes(q);
         if (!matchesLabel && !matchesDetail && !matchesVal) return false;
       }

@@ -6,15 +6,16 @@ interface KeywordPanelProps {
 }
 
 export function KeywordPanel({ keywords }: KeywordPanelProps) {
-  if (keywords.length === 0) {
+  const safeKeywords = keywords || [];
+  if (safeKeywords.length === 0) {
     return <div className="text-center py-12 text-slate-400 text-sm">No keywords could be extracted from the page content.</div>;
   }
 
-  const primary = keywords.filter((k) => k.type === "primary");
-  const secondary = keywords.filter((k) => k.type === "secondary");
-  const supporting = keywords.filter((k) => k.type === "supporting");
+  const primary = safeKeywords.filter((k) => k.type === "primary");
+  const secondary = safeKeywords.filter((k) => k.type === "secondary");
+  const supporting = safeKeywords.filter((k) => k.type === "supporting");
 
-  const maxDensity = Math.max(...keywords.map((k) => k.density), 1);
+  const maxDensity = Math.max(...safeKeywords.map((k) => k.density), 1);
 
   return (
     <div className="space-y-6">

@@ -1703,6 +1703,7 @@ Deno.serve(async (req: Request) => {
     const auditId: string | undefined = body.auditId;
     const mode: string = body.mode || "single"; // "single" | "crawl" | "staging"
     const auditDepth: string = body.auditDepth || "deep"; // "deep" | "standard" | "basic"
+    const extractionFields: Record<string, boolean> | undefined = body.extractionFields;
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl, supabaseServiceKey) : null;

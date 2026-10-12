@@ -2,7 +2,8 @@ import { FileEdit, CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
 import type { ContentRecommendation } from "@/types";
 
 export function UpdatedContentPanel({ recommendations }: { recommendations: ContentRecommendation[] }) {
-  if (recommendations.length === 0) {
+  const safeRecommendations = recommendations || [];
+  if (safeRecommendations.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12">
         <CheckCircle2 className="w-10 h-10 text-emerald-400 mb-3" />

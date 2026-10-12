@@ -3,7 +3,8 @@ import { CopyButton } from "@/components/CopyButton";
 import type { InternalLinkStatus } from "@/types";
 
 export function InternalLinkStatusPanel({ links }: { links: InternalLinkStatus[] }) {
-  if (links.length === 0) {
+  const safeLinks = links || [];
+  if (safeLinks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12">
         <LinkIcon className="w-10 h-10 text-slate-300 mb-3" />
@@ -13,9 +14,9 @@ export function InternalLinkStatusPanel({ links }: { links: InternalLinkStatus[]
     );
   }
 
-  const ok = links.filter((l) => (l.status ?? 0) >= 200 && (l.status ?? 0) < 300);
-  const redirected = links.filter((l) => (l.status ?? 0) >= 300 && (l.status ?? 0) < 400);
-  const broken = links.filter((l) => (l.status ?? 0) === 0 || (l.status ?? 0) >= 400);
+  const ok = safeLinks.filter((l) => (l.status ?? 0) >= 200 && (l.status ?? 0) < 300);
+  const redirected = safeLinks.filter((l) => (l.status ?? 0) >= 300 && (l.status ?? 0) < 400);
+  const broken = safeLinks.filter((l) => (l.status ?? 0) === 0 || (l.status ?? 0) >= 400);
 
   return (
     <div className="space-y-4">

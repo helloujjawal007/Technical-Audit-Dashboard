@@ -2,7 +2,8 @@ import { Building2, CheckCircle2 } from "lucide-react";
 import type { GoogleProperty } from "@/types";
 
 export function GooglePropertiesPanel({ properties }: { properties: GoogleProperty[] }) {
-  if (properties.length === 0) {
+  const safeProperties = properties || [];
+  if (safeProperties.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12">
         <Building2 className="w-10 h-10 text-slate-300 mb-3" />

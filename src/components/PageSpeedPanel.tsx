@@ -56,14 +56,14 @@ export function PageSpeedPanel({ pageSpeed }: PageSpeedPanelProps) {
         </div>
       </div>
 
-      {pageSpeed.recommendations.length > 0 && (
+      {(pageSpeed.recommendations || []).length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-3">
             <Lightbulb className="w-4 h-4 text-amber-500" />
             <h4 className="text-sm font-semibold text-slate-700">Speed Recommendations</h4>
           </div>
           <div className="space-y-2">
-            {pageSpeed.recommendations.map((rec, i) => (
+            {(pageSpeed.recommendations || []).map((rec, i) => (
               <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 border border-amber-100">
                 <span className="text-amber-500 text-xs font-bold mt-0.5">{i + 1}</span>
                 <p className="text-sm text-slate-600">{rec}</p>

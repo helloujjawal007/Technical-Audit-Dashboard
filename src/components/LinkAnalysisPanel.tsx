@@ -11,19 +11,19 @@ export function LinkAnalysisPanel({ linkAnalysis }: LinkAnalysisPanelProps) {
   const [tab, setTab] = useState<"internal" | "external" | "dofollow" | "nofollow">("internal");
 
   const tabs = [
-    { id: "internal" as const, label: "Internal", count: linkAnalysis.internal.length, icon: ArrowRight },
-    { id: "external" as const, label: "External", count: linkAnalysis.external.length, icon: ExternalLink },
-    { id: "dofollow" as const, label: "Dofollow", count: linkAnalysis.dofollow.length, icon: Check },
-    { id: "nofollow" as const, label: "Nofollow", count: linkAnalysis.nofollow.length, icon: X },
+    { id: "internal" as const, label: "Internal", count: linkAnalysis?.internal?.length || 0, icon: ArrowRight },
+    { id: "external" as const, label: "External", count: linkAnalysis?.external?.length || 0, icon: ExternalLink },
+    { id: "dofollow" as const, label: "Dofollow", count: linkAnalysis?.dofollow?.length || 0, icon: Check },
+    { id: "nofollow" as const, label: "Nofollow", count: linkAnalysis?.nofollow?.length || 0, icon: X },
   ];
 
-  const current = linkAnalysis[tab];
+  const current = linkAnalysis?.[tab] || [];
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <Link2 className="w-5 h-5 text-blue-500" />
-        <h3 className="text-base font-semibold text-slate-800">Link Analysis ({linkAnalysis.total} total)</h3>
+        <h3 className="text-base font-semibold text-slate-800">Link Analysis ({linkAnalysis?.total || 0} total)</h3>
       </div>
 
       <div className="flex gap-1 p-1 bg-slate-100 rounded-lg w-fit">

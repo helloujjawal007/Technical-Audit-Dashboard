@@ -309,12 +309,12 @@ function OverviewTab({ result, counts }: { result: AuditResult; counts: Record<C
 
       {/* Quick facts */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        <QuickFact icon={Globe} label="HTTPS" value={result.checks.find((c) => c.id === "https")?.status === "pass" ? "Yes" : "No"} />
-        <QuickFact icon={Activity} label="Response Time" value={`${result.pageSpeed.responseTimeMs}ms`} />
-        <QuickFact icon={Gauge} label="HTML Size" value={`${(result.pageSpeed.htmlSizeBytes / 1024).toFixed(1)}KB`} />
-        <QuickFact icon={Link2} label="Internal Links" value={result.linkAnalysis.internal.length} />
-        <QuickFact icon={Link2} label="External Links" value={result.linkAnalysis.external.length} />
-        <QuickFact icon={Boxes} label="Schema Types" value={result.schema.length} />
+        <QuickFact icon={Globe} label="HTTPS" value={(result.checks || []).find((c) => c.id === "https")?.status === "pass" ? "Yes" : "No"} />
+        <QuickFact icon={Activity} label="Response Time" value={`${result.pageSpeed?.responseTimeMs || 0}ms`} />
+        <QuickFact icon={Gauge} label="HTML Size" value={`${((result.pageSpeed?.htmlSizeBytes || 0) / 1024).toFixed(1)}KB`} />
+        <QuickFact icon={Link2} label="Internal Links" value={result.linkAnalysis?.internal?.length || 0} />
+        <QuickFact icon={Link2} label="External Links" value={result.linkAnalysis?.external?.length || 0} />
+        <QuickFact icon={Boxes} label="Schema Types" value={(result.schema || []).length} />
       </div>
     </div>
   );
@@ -359,11 +359,12 @@ function InfoRow({ label, value, mono }: { label: string; value: string | null; 
   );
 }
 
-function LinksView({ links }: { links: { href: string; rel: string; text: string }[] }) {
-  if (links.length === 0) return <EmptyState message="No links found on this page." />;
+function LinksView({ links }: { links?: { href: string; rel: string; text: string }[] }) {
+  const safeLinks = links || [];
+  if (safeLinks.length === 0) return <EmptyState message="No links found on this page." />;
   return (
     <div className="space-y-2 max-h-96 overflow-y-auto">
-      {links.map((link, i) => (
+      {safeLinks.map((link, i) => (
         <div key={i} className="flex items-center gap-3 p-3 rounded-lg border border-slate-100 bg-white">
           <Link2 className="w-4 h-4 text-slate-400 flex-shrink-0" />
           <div className="flex-1 min-w-0">
@@ -380,11 +381,12 @@ function LinksView({ links }: { links: { href: string; rel: string; text: string
   );
 }
 
-function HeadingsView({ headings }: { headings: { level: number; text: string }[] }) {
-  if (headings.length === 0) return <EmptyState message="No headings found on this page." />;
+function HeadingsView({ headings }: { headings?: { level: number; text: string }[] }) {
+  const safeHeadings = headings || [];
+  if (safeHeadings.length === 0) return <EmptyState message="No headings found on this page." />;
   return (
     <div className="space-y-1">
-      {headings.map((h, i) => (
+      {safeHeadings.map((h, i) => (
         <div key={i} className="flex items-center gap-3 py-1.5" style={{ paddingLeft: `${(h.level - 1) * 20}px` }}>
           <span className="text-xs font-mono text-slate-400 w-8">H{h.level}</span>
           <span className="text-sm text-slate-700">{h.text || "(empty)"}</span>
@@ -394,11 +396,12 @@ function HeadingsView({ headings }: { headings: { level: number; text: string }[
   );
 }
 
-function ImagesView({ images }: { images: { src: string; alt: string }[] }) {
-  if (images.length === 0) return <EmptyState message="No images found on this page." />;
+function ImagesView({ images }: { images?: { src: string; alt: string }[] }) {
+  const safeImages = images || [];
+  if (safeImages.length === 0) return <EmptyState message="No images found on this page." />;
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      {images.map((img, i) => (
+      {safeImages.map((img, i) => (
         <div key={i} className="flex items-start gap-3 p-3 rounded-lg border border-slate-100 bg-white">
           <ImageIcon className="w-4 h-4 text-slate-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
@@ -414,8 +417,8 @@ function ImagesView({ images }: { images: { src: string; alt: string }[] }) {
   );
 }
 
-function HeadersView({ headers }: { headers: Record<string, string> }) {
-  const entries = Object.entries(headers);
+function HeadersView({ headers }: { headers?: Record<string, string> }) {
+  const entries = Object.entries(headers || {});
   if (entries.length === 0) return <EmptyState message="No HTTP headers returned." />;
   return (
     <div className="rounded-xl border border-slate-200 overflow-hidden">

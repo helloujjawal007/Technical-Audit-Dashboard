@@ -68,26 +68,15 @@ export function CrawlResultsView({ pages, baseUrl, sitemapUrl, crawlProgress, is
       page.result ? String(page.result.score) : "",
       page.result?.title || "",
       page.status,
-      page.result ? String(page.result.checks.filter((check) => check.status === "fail" || check.status === "warn").length) : "",
+      page.result ? String((page.result.checks || []).filter((check) => check.status === "fail" || check.status === "warn").length) : "",
     ]),
   ];
-  const getIssueExportRows = (): string[][] => [
-    ["Issue", "Status", "Category", "What it means", "How to fix", "Affected URL"],
-    ...issues.flatMap(({ check, urls: issueUrls }) => {
-      const guidance = guidanceFor(check);
-      return issueUrls.map((url) => [check.label, check.status, check.category, guidance.explanation, guidance.fix, url]);
-    }),
-  ];
-  const handleExportCsv = () => downloadCsv(`seo-audit_${safeName}.csv`, generateCrawlCsv(pages));
-  const handleExportExcel = () => downloadExcel(`seo-audit_${safeName}.xls`, urlExportRows);
-  const handleIssueExportCsv = () => downloadCsv(`seo-issues_${safeName}.csv`, generateIssueCsv(getIssueExportRows()));
-  const handleIssueExportExcel = () => downloadExcel(`seo-issues_${safeName}.xls`, getIssueExportRows());
 
   // Build issue-centric data: group by check ID across all completed pages
   const issueMap = new Map<string, { check: CheckResult; urls: string[] }>();
   for (const page of completed) {
     if (!page.result) continue;
-    for (const check of page.result.checks) {
+    for (const check of page.result.checks || []) {
       if (check.status === "fail" || check.status === "warn") {
         const key = check.id;
         if (!issueMap.has(key)) {
@@ -103,6 +92,18 @@ export function CrawlResultsView({ pages, baseUrl, sitemapUrl, crawlProgress, is
     if (statusDiff !== 0) return statusDiff;
     return b.urls.length - a.urls.length;
   });
+
+  const getIssueExportRows = (): string[][] => [
+    ["Issue", "Status", "Category", "What it means", "How to fix", "Affected URL"],
+    ...issues.flatMap(({ check, urls: issueUrls }) => {
+      const guidance = guidanceFor(check);
+      return issueUrls.map((url) => [check.label, check.status, check.category, guidance.explanation, guidance.fix, url]);
+    }),
+  ];
+  const handleExportCsv = () => downloadCsv(`seo-audit_${safeName}.csv`, generateCrawlCsv(pages));
+  const handleExportExcel = () => downloadExcel(`seo-audit_${safeName}.xls`, urlExportRows);
+  const handleIssueExportCsv = () => downloadCsv(`seo-issues_${safeName}.csv`, generateIssueCsv(getIssueExportRows()));
+  const handleIssueExportExcel = () => downloadExcel(`seo-issues_${safeName}.xls`, getIssueExportRows());
 
   return (
     <div className="space-y-4">

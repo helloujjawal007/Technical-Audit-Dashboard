@@ -7,9 +7,10 @@ interface SocialPreviewCardProps {
 }
 
 export function SocialPreviewCard({ preview, url }: SocialPreviewCardProps) {
-  const title = preview.ogTitle || preview.twitterTitle || "No title";
-  const description = preview.ogDescription || preview.twitterDescription || "No description found";
-  const image = preview.ogImage || preview.twitterImage;
+  const safePreview = preview || { ogTitle: null, ogDescription: null, ogImage: null, twitterCard: null, twitterTitle: null, twitterDescription: null, twitterImage: null };
+  const title = safePreview.ogTitle || safePreview.twitterTitle || "No title";
+  const description = safePreview.ogDescription || safePreview.twitterDescription || "No description found";
+  const image = safePreview.ogImage || safePreview.twitterImage;
   let hostname = url;
   try { hostname = new URL(url).hostname; } catch { /* keep */ }
 

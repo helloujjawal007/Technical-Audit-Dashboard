@@ -11,10 +11,12 @@ interface RecommendationsPanelProps {
 export function RecommendationsPanel({ recommendations }: RecommendationsPanelProps) {
   const [filter, setFilter] = useState<Priority | "all">("all");
 
+  const safeRecommendations = useMemo(() => recommendations || [], [recommendations]);
+
   const sorted = useMemo(() => {
     const order = { high: 0, medium: 1, low: 2 };
-    return [...recommendations].sort((a, b) => order[a.priority] - order[b.priority]);
-  }, [recommendations]);
+    return [...safeRecommendations].sort((a, b) => order[a.priority] - order[b.priority]);
+  }, [safeRecommendations]);
 
   const high = useMemo(() => sorted.filter((r) => r.priority === "high").length, [sorted]);
   const medium = useMemo(() => sorted.filter((r) => r.priority === "medium").length, [sorted]);
@@ -25,7 +27,7 @@ export function RecommendationsPanel({ recommendations }: RecommendationsPanelPr
     return sorted.filter((r) => r.priority === filter);
   }, [sorted, filter]);
 
-  if (recommendations.length === 0) {
+  if (safeRecommendations.length === 0) {
     return (
       <div className="rounded-2xl border border-slate-200/80 bg-white/80 backdrop-blur-md p-10 text-center shadow-sm">
         <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-500 border border-emerald-100 flex items-center justify-center mx-auto mb-3 shadow-sm">

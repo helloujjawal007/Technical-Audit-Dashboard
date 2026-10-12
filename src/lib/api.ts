@@ -26,6 +26,9 @@ export async function invokeEdgeFunction<T = unknown>(
     if (anonKey && !h["Authorization"]) {
       h["Authorization"] = `Bearer ${anonKey}`;
     }
+    if (anonKey && !h["apikey"]) {
+      h["apikey"] = anonKey;
+    }
     return h;
   };
 
