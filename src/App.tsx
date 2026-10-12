@@ -218,7 +218,13 @@ function App() {
     if (user) {
       const { data, error } = await supabase
         .from("seo_audits")
-        .insert({ url: normalizedUrl, status: "running", audit_type: auditType, audit_depth: depth })
+        .insert({
+          url: normalizedUrl,
+          status: "running",
+          audit_type: auditType,
+          audit_depth: depth,
+          user_id: user.id,
+        })
         .select()
         .single();
       if (error || !data) {
@@ -300,7 +306,13 @@ function App() {
         if (user) {
           const { data: auditRow } = await supabase
             .from("seo_audits")
-            .insert({ url: pageUrl, status: "running", audit_type: auditType, audit_depth: depth })
+            .insert({
+              url: pageUrl,
+              status: "running",
+              audit_type: auditType,
+              audit_depth: depth,
+              user_id: user.id,
+            })
             .select()
             .single();
           auditId = (auditRow as AuditRow | null)?.id;
@@ -421,6 +433,27 @@ function App() {
     await supabase.from("seo_audits").delete().eq("id", id);
     setAudits((prev) => prev.filter((a) => a.id !== id));
     if (selected?.id === id) {
+      setSelected(null);
+      setResult(null);
+    }
+    await refreshCreditUsage();
+  };
+
+  const handleClearAllHistory = async () => {
+    if (user) {
+      await supabase.from("seo_audits").delete().eq("user_id", user.id);
+    }
+    setAudits([]);
+    setSelected(null);
+    setResult(null);
+    await refreshCreditUsage();
+  };
+
+  const handleDeleteSelected = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    await supabase.from("seo_audits").delete().in("id", ids);
+    setAudits((prev) => prev.filter((a) => !ids.includes(a.id)));
+    if (selected && ids.includes(selected.id)) {
       setSelected(null);
       setResult(null);
     }
@@ -550,11 +583,14 @@ function App() {
         {activeNav === "history" && (
           <HistoryPageView
             audits={audits}
+            userEmail={user?.email || null}
             onSelectAudit={(a) => {
               handleSelect(a);
               setActiveNav("audit");
             }}
             onDeleteAudit={handleDelete}
+            onDeleteSelected={handleDeleteSelected}
+            onClearAllHistory={handleClearAllHistory}
             onStartNewAudit={() => setActiveNav("audit")}
           />
         )}
