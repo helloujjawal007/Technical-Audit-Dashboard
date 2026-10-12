@@ -10,10 +10,7 @@ import { ResultsView } from "@/components/ResultsView";
 import { CrawlResultsView } from "@/components/CrawlResultsView";
 import { AllHistoryModal } from "@/components/AllHistoryModal";
 import { CreditDisplay } from "@/components/CreditDisplay";
-import { NavBar, type NavPage } from "@/components/NavBar";
-import { ContentGeneration } from "@/components/ContentGeneration";
-import { PlagiarismChecker } from "@/components/PlagiarismChecker";
-import { ContactUs } from "@/components/ContactUs";
+import { NavBar } from "@/components/NavBar";
 import { getCreditUsage, getAllCreditUsage, recordCreditUsage, canStartAudit, getGuestCreditUsage, recordGuestCreditUsage, canStartGuestAudit } from "@/lib/credits";
 import type { AuditResult, AuditRow, AuditMode, AuditDepth, CrawlPageResult, CustomExtractionFields } from "@/types";
 
@@ -26,7 +23,6 @@ function normalizeUrl(raw: string): string {
 
 function App() {
   const { user, loading: authLoading, signOut, guest, signInAsGuest, exitGuest } = useAuth();
-  const [activeNav, setActiveNav] = useState<NavPage>("audit");
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [selected, setSelected] = useState<AuditRow | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -392,18 +388,11 @@ function App() {
         userName={userName}
         isGuest={isGuest}
         guestCredits={guestCredits}
-        activeNav={activeNav}
-        onNavChange={setActiveNav}
         onSignOut={signOut}
         onExitGuest={exitGuest}
       />
 
       <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {activeNav === "content" && <ContentGeneration />}
-        {activeNav === "plagiarism" && <PlagiarismChecker />}
-        {activeNav === "contact" && <ContactUs />}
-        {activeNav === "audit" && (
-          <>
             <section className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
               {/* Audit form card */}
               <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
@@ -561,8 +550,6 @@ function App() {
                 )}
               </section>
             )}
-          </>
-        )}
       </div>
 
       {/* All History Modal */}
