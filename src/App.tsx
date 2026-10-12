@@ -22,7 +22,7 @@ function normalizeUrl(raw: string): string {
 }
 
 function App() {
-  const { user, loading: authLoading, signOut, guest, signInAsGuest, exitGuest } = useAuth();
+  const { user, loading: authLoading, signOut, guest, signInAsGuest, exitGuest, subscription, isRecovery, clearRecovery } = useAuth();
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [selected, setSelected] = useState<AuditRow | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -375,8 +375,14 @@ function App() {
     );
   }
 
-  if (!user && !guest) {
-    return <AuthPage onGuestLogin={signInAsGuest} />;
+  if (isRecovery || (!user && !guest)) {
+    return (
+      <AuthPage
+        onGuestLogin={signInAsGuest}
+        isRecoveryMode={isRecovery}
+        onRecoveryComplete={clearRecovery}
+      />
+    );
   }
 
   const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Guest";
@@ -387,6 +393,7 @@ function App() {
       <NavBar
         userName={userName}
         isGuest={isGuest}
+        isAdmin={subscription?.tier === "admin"}
         guestCredits={guestCredits}
         onSignOut={signOut}
         onExitGuest={exitGuest}

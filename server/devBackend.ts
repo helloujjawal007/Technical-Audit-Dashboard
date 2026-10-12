@@ -28,6 +28,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+const devResetTokens = new Map<string, { token: string; expiresAt: number }>();
+
 export function devBackendPlugin(): Plugin {
   return {
     name: "vite-plugin-dev-backend",
@@ -72,15 +74,46 @@ export function devBackendPlugin(): Plugin {
 
 
 
-          // 6. Password Reset
+          // Password Reset (Token generation & verification)
           if (endpoint === "password-reset") {
             const body = await parseJsonBody(req);
-            if (!body.email) {
+            const cleanEmail = (typeof body.email === "string" ? body.email : "").trim().toLowerCase();
+            if (!cleanEmail) {
               return sendJson(res, 400, { error: "Email is required." });
             }
+
+            // If verifying token and setting new password
+            if (body.token && body.newPassword) {
+              const record = devResetTokens.get(cleanEmail);
+              const submittedToken = String(body.token).trim();
+              if (!record || record.expiresAt < Date.now() || record.token !== submittedToken) {
+                return sendJson(res, 400, {
+                  success: false,
+                  error: "Invalid or expired verification code.",
+                });
+              }
+              // Successfully verified, clear token
+              devResetTokens.delete(cleanEmail);
+              return sendJson(res, 200, {
+                success: true,
+                message: "Password updated successfully.",
+              });
+            }
+
+            // Otherwise generate 6-digit verification token
+            const token = Math.floor(100000 + Math.random() * 900000).toString();
+            devResetTokens.set(cleanEmail, {
+              token,
+              expiresAt: Date.now() + 15 * 60 * 1000, // 15 min validity
+            });
+            console.log(`\n========================================`);
+            console.log(`[DevBackend] Password Reset Token for ${cleanEmail}: ${token}`);
+            console.log(`========================================\n`);
+
             return sendJson(res, 200, {
               success: true,
-              message: "Password reset email sent. Check your inbox.",
+              message: "Verification code sent to your email.",
+              token, // Included in response for dev convenience
             });
           }
 

@@ -1,8 +1,9 @@
-import { FileSearch, LogOut, User as UserIcon, Ghost } from "lucide-react";
+import { FileSearch, LogOut, User as UserIcon, Ghost, ShieldCheck } from "lucide-react";
 
 interface NavBarProps {
   userName: string;
   isGuest: boolean;
+  isAdmin?: boolean;
   guestCredits: number | null;
   onSignOut: () => void;
   onExitGuest: () => void;
@@ -11,6 +12,7 @@ interface NavBarProps {
 export function NavBar({
   userName,
   isGuest,
+  isAdmin,
   guestCredits,
   onSignOut,
   onExitGuest,
@@ -50,6 +52,12 @@ export function NavBar({
                   <span className="text-sm text-slate-600 font-medium max-w-[120px] truncate">
                     {userName}
                   </span>
+                  {isAdmin && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                      <ShieldCheck className="w-3 h-3 text-amber-600" />
+                      Admin
+                    </span>
+                  )}
                 </div>
                 <button
                   onClick={onSignOut}
