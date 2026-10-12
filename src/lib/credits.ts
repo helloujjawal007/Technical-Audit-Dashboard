@@ -30,14 +30,33 @@ export async function getCreditUsage(
   userId: string,
   auditType: string
 ): Promise<CreditUsage> {
-  const { data: subscription } = await supabase
-    .from("user_subscriptions")
-    .select("tier")
-    .eq("user_id", userId)
-    .maybeSingle();
-  const isAdmin =
-    subscription?.tier === "admin" ||
+  const { data: sessionData } = await supabase.auth.getSession();
+  const sessionEmail = (sessionData?.session?.user?.email || "").toLowerCase();
+  const sessionName = ((sessionData?.session?.user?.user_metadata?.full_name as string) || "").toLowerCase();
+
+  const isTargetAdmin =
+    sessionEmail.includes("ujjawalkumar5651") ||
+    sessionName.includes("ujjawalkumar5651") ||
     userId === "f48fc59a-3a3f-46f8-9ab3-d0727cd43b57";
+
+  let isAdmin = isTargetAdmin;
+
+  if (!isAdmin) {
+    const { data: subscription } = await supabase
+      .from("user_subscriptions")
+      .select("tier")
+      .eq("user_id", userId)
+      .maybeSingle();
+    isAdmin = subscription?.tier === "admin";
+  } else {
+    try {
+      await supabase.from("user_subscriptions").upsert({
+        user_id: userId,
+        tier: "admin",
+      });
+    } catch { /* ignore */ }
+  }
+
   const limit = isAdmin
     ? { label: "Admin", limit: ADMIN_DAILY_LIMIT, windowDays: 1, windowLabel: "per day" }
     : FREE_TIER_LIMITS[auditType] || FREE_TIER_LIMITS.single;

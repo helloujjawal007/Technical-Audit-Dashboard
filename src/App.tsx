@@ -527,13 +527,17 @@ function App() {
 
   const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Guest";
   const isGuest = Boolean(!user && guest);
+  const isAdmin =
+    subscription?.tier === "admin" ||
+    Boolean(user?.email?.toLowerCase().includes("ujjawalkumar5651")) ||
+    user?.id === "f48fc59a-3a3f-46f8-9ab3-d0727cd43b57";
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       <NavBar
         userName={userName}
         isGuest={isGuest}
-        isAdmin={subscription?.tier === "admin"}
+        isAdmin={isAdmin}
         guestCredits={guestCredits}
         activeNav={activeNav}
         onNavChange={setActiveNav}
