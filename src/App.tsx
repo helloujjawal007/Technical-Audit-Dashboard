@@ -28,7 +28,19 @@ function normalizeUrl(raw: string): string {
 }
 
 function App() {
-  const { user, loading: authLoading, signOut, guest, signInAsGuest, exitGuest, subscription, isRecovery, clearRecovery } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    signOut,
+    guest,
+    signInAsGuest,
+    exitGuest,
+    subscription,
+    isRecovery,
+    clearRecovery,
+    authUrlError,
+    clearAuthUrlError,
+  } = useAuth();
   const [activeNav, setActiveNav] = useState<NavPage>("audit");
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [selected, setSelected] = useState<AuditRow | null>(null);
@@ -555,6 +567,8 @@ function App() {
         onGuestLogin={signInAsGuest}
         isRecoveryMode={isRecovery}
         onRecoveryComplete={clearRecovery}
+        initialError={authUrlError}
+        onClearInitialError={clearAuthUrlError}
       />
     );
   }

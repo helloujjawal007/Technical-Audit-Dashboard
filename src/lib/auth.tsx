@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback, type React
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { invokeEdgeFunction } from "@/lib/api";
+import { isSystemAdminUser } from "@/lib/admin";
 
 export interface Subscription {
   tier: string;
@@ -19,6 +20,8 @@ export interface AuthContextValue {
   subscription: Subscription | null;
   guest: GuestInfo | null;
   isRecovery: boolean;
+  authUrlError: string | null;
+  clearAuthUrlError: () => void;
   clearRecovery: () => void;
   refreshSubscription: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -26,9 +29,51 @@ export interface AuthContextValue {
   exitGuest: () => void;
 }
 
-import { isSystemAdminUser } from "@/lib/admin";
-
 const GUEST_KEY = "guest-session";
+const RECOVERY_STORAGE_KEY = "supabase_auth_recovery_active";
+
+function checkIsRecovery(): boolean {
+  if (typeof window === "undefined") return false;
+  const hash = window.location.hash || "";
+  const search = window.location.search || "";
+  const inStorage = sessionStorage.getItem(RECOVERY_STORAGE_KEY) === "true";
+
+  return (
+    inStorage ||
+    hash.includes("type=recovery") ||
+    hash.includes("type=reset") ||
+    hash.includes("reset-password") ||
+    search.includes("type=recovery") ||
+    search.includes("reset=true")
+  );
+}
+
+function extractUrlAuthError(): string | null {
+  if (typeof window === "undefined") return null;
+  const hash = window.location.hash || "";
+  const search = window.location.search || "";
+  if (!hash.includes("error") && !search.includes("error")) return null;
+
+  const parseParam = (source: string, key: string) => {
+    const match = source.match(new RegExp(`[?&#]${key}=([^&#]*)`));
+    return match ? decodeURIComponent(match[1].replace(/\+/g, " ")) : null;
+  };
+
+  const desc = parseParam(search, "error_description") || parseParam(hash, "error_description");
+  const code = parseParam(search, "error_code") || parseParam(hash, "error_code");
+
+  if (code === "otp_expired") {
+    return "This password reset link has expired or has already been used. Please request a new password reset link.";
+  }
+  if (desc) {
+    return desc;
+  }
+  const err = parseParam(search, "error") || parseParam(hash, "error");
+  if (err) {
+    return `Authentication error: ${err}`;
+  }
+  return null;
+}
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
@@ -38,14 +83,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [guest, setGuest] = useState<GuestInfo | null>(null);
-  const [isRecovery, setIsRecovery] = useState(() => {
-    if (typeof window === "undefined") return false;
-    const hash = window.location.hash || "";
-    return hash.includes("type=recovery") || hash.includes("type=reset");
+  const [authUrlError, setAuthUrlError] = useState<string | null>(() => extractUrlAuthError());
+  const [isRecovery, setIsRecovery] = useState<boolean>(() => {
+    // If there is an auth error, don't trap the user in reset mode
+    if (extractUrlAuthError()) return false;
+    return checkIsRecovery();
   });
+
+  const clearAuthUrlError = useCallback(() => {
+    setAuthUrlError(null);
+  }, []);
 
   const clearRecovery = useCallback(() => {
     setIsRecovery(false);
+    try {
+      sessionStorage.removeItem(RECOVERY_STORAGE_KEY);
+    } catch { /* ignore */ }
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", window.location.pathname);
     }
@@ -90,6 +143,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch { /* ignore */ }
 
+    // If an error was in the URL, clean the URL so reloads are clean
+    if (authUrlError && typeof window !== "undefined") {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
@@ -97,22 +155,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
-      (async () => {
-        setSession(newSession);
-        setUser(newSession?.user ?? null);
-        setLoading(false);
-        if (event === "PASSWORD_RECOVERY") {
-          setIsRecovery(true);
-        }
-        if (newSession?.user) {
-          setGuest(null);
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+      setLoading(false);
+
+      if (event === "PASSWORD_RECOVERY") {
+        setIsRecovery(true);
+        try {
+          sessionStorage.setItem(RECOVERY_STORAGE_KEY, "true");
+        } catch { /* ignore */ }
+      }
+
+      if (newSession?.user) {
+        setGuest(null);
+        try {
           localStorage.removeItem(GUEST_KEY);
-        }
-      })();
+        } catch { /* ignore */ }
+      }
     });
 
     return () => listener.subscription.unsubscribe();
-  }, []);
+  }, [authUrlError]);
 
   useEffect(() => {
     if (user) {
@@ -123,12 +186,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, refreshSubscription]);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    setSession(null);
-    setUser(null);
-    setSubscription(null);
-    setGuest(null);
-    localStorage.removeItem(GUEST_KEY);
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn("SignOut error:", err);
+    } finally {
+      setSession(null);
+      setUser(null);
+      setSubscription(null);
+      setGuest(null);
+      setIsRecovery(false);
+      try {
+        localStorage.removeItem(GUEST_KEY);
+        sessionStorage.removeItem(RECOVERY_STORAGE_KEY);
+      } catch { /* ignore */ }
+    }
   }, []);
 
   const signInAsGuest = useCallback(async () => {
@@ -150,7 +222,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const exitGuest = useCallback(() => {
     setGuest(null);
-    localStorage.removeItem(GUEST_KEY);
+    try {
+      localStorage.removeItem(GUEST_KEY);
+    } catch { /* ignore */ }
   }, []);
 
   return (
@@ -162,6 +236,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         subscription,
         guest,
         isRecovery,
+        authUrlError,
+        clearAuthUrlError,
         clearRecovery,
         refreshSubscription,
         signOut,

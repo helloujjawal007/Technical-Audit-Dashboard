@@ -24,3 +24,4 @@ export function isSystemAdminUser(
     (userCandidate.id ? hashStr(userCandidate.id) === "9u4m84" : false)
   );
 }
+
