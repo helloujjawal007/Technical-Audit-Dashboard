@@ -1789,6 +1789,7 @@ Deno.serve(async (req: Request) => {
         result.score = Math.max(0, 100 - Math.min(Math.abs(deduction), 100));
       }
 
+      let savedAuditId = auditId;
       if (auditId && supabase) {
         try {
           await supabase.from("seo_audits").update({
@@ -1804,9 +1805,29 @@ Deno.serve(async (req: Request) => {
         } catch (dbErr) {
           console.warn("Could not save audit to database:", dbErr);
         }
+      } else if (!auditId && supabase) {
+        try {
+          const { data: newRow } = await supabase.from("seo_audits").insert({
+            url: targetUrl,
+            status: "completed",
+            score: result.score,
+            title: result.title,
+            description: result.description,
+            checks: result.checks as unknown as Record<string, unknown>,
+            result_data: result as unknown as Record<string, unknown>,
+            error: null,
+            audit_type: mode || "single",
+            audit_depth: auditDepth || "standard",
+          }).select("id").single();
+          if (newRow?.id) {
+            savedAuditId = newRow.id;
+          }
+        } catch (dbErr) {
+          console.warn("Could not auto-insert audit to database:", dbErr);
+        }
       }
 
-      return new Response(JSON.stringify(result), {
+      return new Response(JSON.stringify({ ...result, auditId: savedAuditId }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     } catch (e) {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, Loader2, History, Ghost } from "lucide-react";
+import { AlertCircle, Loader2, History, Ghost, BarChart3, ArrowLeft } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
 import { invokeEdgeFunction } from "@/lib/api";
@@ -50,6 +50,64 @@ function App() {
   const [showAllHistory, setShowAllHistory] = useState(false);
   const [creditError, setCreditError] = useState<string | null>(null);
   const [guestCredits, setGuestCredits] = useState<number | null>(null);
+
+  // Shared public audit state (?report= or ?auditId=)
+  const [sharedReportId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("report") || params.get("auditId");
+  });
+  const [sharedAudit, setSharedAudit] = useState<{ row: AuditRow; result: AuditResult } | null>(null);
+  const [sharedLoading, setSharedLoading] = useState(false);
+  const [sharedError, setSharedError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!sharedReportId) return;
+    setSharedLoading(true);
+    supabase
+      .from("seo_audits")
+      .select("*")
+      .eq("id", sharedReportId)
+      .single()
+      .then(({ data, error }) => {
+        setSharedLoading(false);
+        if (error || !data) {
+          setSharedError("Audit report not found or link has expired.");
+          return;
+        }
+        const row = data as AuditRow;
+        const resData = (row.result_data || {
+          score: row.score || 0,
+          title: row.title,
+          description: row.description,
+          checks: row.checks || [],
+          categoryScores: [],
+          robotsContent: null,
+          sitemapContent: null,
+          sitemapUrl: null,
+          headers: {},
+          socialPreview: { ogTitle: null, ogDescription: null, ogImage: null, twitterCard: null, twitterTitle: null, twitterDescription: null, twitterImage: null },
+          links: [],
+          headings: [],
+          images: [],
+          keywords: [],
+          schema: [],
+          pageSpeed: { responseTimeMs: 0, htmlSizeBytes: 0, estimatedTransferTimeSec: 0, resources: 0, scripts: 0, stylesheets: 0, images: 0, mobileOptimized: false, hasViewport: false, recommendations: [] },
+          linkAnalysis: { internal: [], external: [], dofollow: [], nofollow: [], total: 0 },
+          hasTOC: false,
+          hasFAQ: false,
+          hasInfographic: false,
+          recommendations: [],
+          noindex: { indexable: true, source: null, directive: null, detail: "" },
+          googleProperties: [],
+          internalLinkStatuses: [],
+          schemaValidation: [],
+          contentRecommendations: [],
+          keywordMetrics: [],
+        }) as AuditResult;
+        setSharedAudit({ row, result: resData });
+      });
+  }, [sharedReportId]);
 
   // Fetch guest credit usage
   useEffect(() => {
@@ -368,6 +426,86 @@ function App() {
     }
     await refreshCreditUsage();
   };
+
+  if (sharedLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center">
+        <Loader2 className="w-10 h-10 text-teal-400 animate-spin mb-4" />
+        <h2 className="text-xl font-bold tracking-tight">Loading Audit Report...</h2>
+        <p className="text-sm text-slate-400 mt-1">Retrieving technical SEO benchmarks</p>
+      </div>
+    );
+  }
+
+  if (sharedError) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center">
+        <div className="w-14 h-14 rounded-2xl bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center justify-center mb-4">
+          <AlertCircle className="w-7 h-7" />
+        </div>
+        <h2 className="text-xl font-bold tracking-tight">Report Unavailable</h2>
+        <p className="text-sm text-slate-400 mt-1 max-w-sm">{sharedError}</p>
+        <button
+          type="button"
+          onClick={() => {
+            window.location.href = window.location.pathname;
+          }}
+          className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-bold rounded-xl transition-all shadow-md shadow-teal-500/20"
+        >
+          <ArrowLeft className="w-4 h-4" /> Go to Audit Studio
+        </button>
+      </div>
+    );
+  }
+
+  if (sharedAudit) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+        {/* Modern Public Header */}
+        <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-md text-white border-b border-slate-800 px-4 sm:px-8 py-3.5 flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-teal-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-teal-500/20 flex-shrink-0">
+              <BarChart3 className="w-5 h-5 text-white" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] uppercase font-extrabold tracking-wider bg-teal-500/20 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-md">
+                  Shared Audit Report
+                </span>
+                <span className="text-xs text-slate-300 truncate max-w-xs sm:max-w-md font-mono">
+                  {sharedAudit.row.url}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = window.location.pathname;
+              }}
+              className="text-xs font-bold px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 transition-all shadow-sm"
+            >
+              Run Your Own Audit
+            </button>
+          </div>
+        </header>
+
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full flex-1">
+          <ResultsView
+            result={sharedAudit.result}
+            url={sharedAudit.row.url}
+            auditId={sharedAudit.row.id}
+          />
+        </main>
+
+        <footer className="py-6 text-center text-xs text-slate-400 border-t border-slate-200/60 bg-white">
+          Technical SEO Audit Report generated automatically
+        </footer>
+      </div>
+    );
+  }
 
   if (authLoading) {
     return (

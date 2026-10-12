@@ -314,3 +314,4 @@ export function HistoryPageView({
     </div>
   );
 }
+
