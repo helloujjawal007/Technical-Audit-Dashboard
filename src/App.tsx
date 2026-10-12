@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2, History, Ghost, BarChart3, ArrowLeft } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
+import { isSystemAdminUser } from "@/lib/admin";
 import { invokeEdgeFunction } from "@/lib/api";
 import { AuthPage } from "@/components/AuthPage";
 import { AuditForm } from "@/components/AuditForm";
@@ -560,10 +561,7 @@ function App() {
 
   const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Guest";
   const isGuest = Boolean(!user && guest);
-  const isAdmin =
-    subscription?.tier === "admin" ||
-    Boolean(user?.email?.toLowerCase().includes("ujjawalkumar5651")) ||
-    user?.id === "f48fc59a-3a3f-46f8-9ab3-d0727cd43b57";
+  const isAdmin = subscription?.tier === "admin" || isSystemAdminUser(user);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">

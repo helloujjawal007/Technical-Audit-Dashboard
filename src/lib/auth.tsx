@@ -26,6 +26,8 @@ export interface AuthContextValue {
   exitGuest: () => void;
 }
 
+import { isSystemAdminUser } from "@/lib/admin";
+
 const GUEST_KEY = "guest-session";
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -55,12 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const email = user.email?.toLowerCase() || "";
-    const name = (user.user_metadata?.full_name || "").toLowerCase();
-    const isTargetAdmin =
-      email.includes("ujjawalkumar5651") ||
-      name.includes("ujjawalkumar5651") ||
-      user.id === "f48fc59a-3a3f-46f8-9ab3-d0727cd43b57";
+    const isTargetAdmin = isSystemAdminUser(user);
 
     const { data } = await supabase
       .from("user_subscriptions")

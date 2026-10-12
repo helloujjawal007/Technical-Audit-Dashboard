@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { isSystemAdminUser } from "@/lib/admin";
 
 export interface CreditLimit {
   label: string;
@@ -31,13 +32,8 @@ export async function getCreditUsage(
   auditType: string
 ): Promise<CreditUsage> {
   const { data: sessionData } = await supabase.auth.getSession();
-  const sessionEmail = (sessionData?.session?.user?.email || "").toLowerCase();
-  const sessionName = ((sessionData?.session?.user?.user_metadata?.full_name as string) || "").toLowerCase();
-
-  const isTargetAdmin =
-    sessionEmail.includes("ujjawalkumar5651") ||
-    sessionName.includes("ujjawalkumar5651") ||
-    userId === "f48fc59a-3a3f-46f8-9ab3-d0727cd43b57";
+  const sessionUser = sessionData?.session?.user;
+  const isTargetAdmin = isSystemAdminUser(sessionUser || { id: userId });
 
   let isAdmin = isTargetAdmin;
 

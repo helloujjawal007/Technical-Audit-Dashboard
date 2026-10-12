@@ -14,24 +14,22 @@ import {
   Flame,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { isSystemAdminUser } from "@/lib/admin";
+import { supabaseUrl } from "@/lib/supabase";
 
 export function SettingsPageView() {
   const { user, subscription, refreshSubscription } = useAuth();
-  const userEmail = user?.email || "ujjawalkumar5651@gmail.com";
-  const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Ujjawal Kumar";
-
-  // Force Admin status for ujjawalkumar5651
-  const isTargetAdmin =
-    userEmail.toLowerCase().includes("ujjawalkumar5651") ||
-    subscription?.tier === "admin" ||
-    user?.id === "f48fc59a-3a3f-46f8-9ab3-d0727cd43b57";
-
-  const isAdmin = isTargetAdmin;
+  const isAdmin = Boolean(subscription?.tier === "admin" || isSystemAdminUser(user));
+  const userEmail = user?.email || (isAdmin ? "admin@seoauditpro.com" : "guest@seoauditpro.com");
+  const userName = user?.user_metadata?.full_name || (user?.email ? user.email.split("@")[0] : isAdmin ? "System Administrator" : "Guest");
 
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
   const [copiedTemplate, setCopiedTemplate] = useState(false);
 
-  const apiEndpointUrl = "https://vwcxxdqtjieotmhtifgz.supabase.co/functions/v1/seo-audit";
+  const apiEndpointUrl = supabaseUrl
+    ? `${supabaseUrl}/functions/v1/seo-audit`
+    : "https://api.supabase.co/functions/v1/seo-audit";
+
   const emailTemplate = `Hi [Prospect Name],
 
 We ran a quick technical SEO and speed audit on [prospectsite.com] and noticed an overall health score of 58/100.
@@ -45,7 +43,7 @@ You can view the full interactive audit report here:
 https://technical-audit-dashboard.vercel.app/?report={auditId}
 
 Best regards,
-Ujjawal Kumar`;
+[Your Name / SEO Audit Team]`;
 
   const copyToClipboard = (text: string, setCopied: (v: boolean) => void) => {
     navigator.clipboard.writeText(text);
@@ -83,13 +81,19 @@ Ujjawal Kumar`;
                 <h3 className="text-lg font-black text-slate-900">
                   {isAdmin ? "Enterprise Administrator Plan" : "Free Community Plan"}
                 </h3>
-                <span className="text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
-                  <Sparkles className="w-3 h-3 text-amber-600" />
-                  Admin Active
-                </span>
+                {isAdmin ? (
+                  <span className="text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-amber-600" />
+                    Admin Active
+                  </span>
+                ) : (
+                  <span className="text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 flex items-center gap-1">
+                    Community Tier
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Assigned to: <strong className="font-mono text-slate-800">ujjawalkumar5651@gmail.com</strong>
+                Assigned to: <strong className="font-mono text-slate-800">{user?.email || (isAdmin ? "Enterprise Administrator" : "Guest User")}</strong>
               </p>
             </div>
           </div>
@@ -112,8 +116,12 @@ Ujjawal Kumar`;
               <span>Daily Audit Allowance</span>
               <Flame className="w-4 h-4 text-amber-600" />
             </div>
-            <span className="text-2xl font-black text-slate-900 font-mono block">200 / Day</span>
-            <span className="text-[11px] text-amber-800 font-medium">Full deep scan capabilities unlocked</span>
+            <span className="text-2xl font-black text-slate-900 font-mono block">
+              {isAdmin ? "200 / Day" : "5 / Day"}
+            </span>
+            <span className="text-[11px] text-amber-800 font-medium">
+              {isAdmin ? "Full deep scan capabilities unlocked" : "Standard daily community quota"}
+            </span>
           </div>
 
           <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-1">
@@ -211,7 +219,7 @@ Ujjawal Kumar`;
           <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-2xl bg-slate-50 border border-slate-200/60 gap-1 text-xs">
             <div className="flex items-center gap-2.5">
               <Mail className="w-4 h-4 text-slate-400" />
-              <span className="font-semibold text-slate-600">Admin Email</span>
+              <span className="font-semibold text-slate-600">{isAdmin ? "Admin Email" : "Account Email"}</span>
             </div>
             <span className="font-mono font-bold text-slate-900">{userEmail}</span>
           </div>
@@ -221,8 +229,8 @@ Ujjawal Kumar`;
               <Database className="w-4 h-4 text-slate-400" />
               <span className="font-semibold text-slate-600">System Role</span>
             </div>
-            <span className="font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-300">
-              Super Administrator (200 Daily Audits)
+            <span className={isAdmin ? "font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-300" : "font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200"}>
+              {isAdmin ? "Super Administrator (200 Daily Audits)" : "Community Member (5 Daily Audits)"}
             </span>
           </div>
         </div>
@@ -239,7 +247,7 @@ Ujjawal Kumar`;
           <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/60 flex items-center justify-between">
             <span className="text-slate-600 font-medium">PostgreSQL Database (Supabase)</span>
             <span className="inline-flex items-center gap-1 font-bold text-emerald-600">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Online (vwcxxdqtjieotmhtifgz)
+              <CheckCircle2 className="w-3.5 h-3.5" /> Online (Active Cloud DB)
             </span>
           </div>
 
@@ -260,7 +268,7 @@ Ujjawal Kumar`;
           <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/60 flex items-center justify-between">
             <span className="text-slate-600 font-medium">Database Table: user_subscriptions</span>
             <span className="inline-flex items-center gap-1 font-bold text-emerald-600">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Tracking (Tier: admin)
+              <CheckCircle2 className="w-3.5 h-3.5" /> Tracking (Tier: {isAdmin ? "admin" : "standard"})
             </span>
           </div>
         </div>

@@ -32,8 +32,9 @@ function normalizeAuthEmail(val: string): string {
   const trimmed = val.trim().toLowerCase();
   if (!trimmed) return "";
   if (!trimmed.includes("@")) {
-    if (trimmed === "ujjawalkumar5651") {
-      return "ujjawalkumar5651@gmail.com";
+    const adminEmail = (import.meta.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
+    if (adminEmail && adminEmail.split("@")[0] === trimmed) {
+      return adminEmail;
     }
     return `${trimmed}@gmail.com`;
   }
@@ -540,7 +541,7 @@ export function AuthPage({ onGuestLogin, isRecoveryMode = false, onRecoveryCompl
                     className="w-full pl-12 pr-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
-                <p className="mt-1.5 text-xs text-slate-400">Enter your email address or account username (e.g. ujjawalkumar5651).</p>
+                <p className="mt-1.5 text-xs text-slate-400">Enter your email address or username (e.g. user@example.com).</p>
               </div>
 
               <div>
