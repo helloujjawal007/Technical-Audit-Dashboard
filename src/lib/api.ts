@@ -3,6 +3,8 @@
  * local development fallback if the remote function is not deployed (HTTP 404).
  */
 
+import { supabaseUrl, supabaseAnonKey } from "@/lib/supabase";
+
 interface InvokeOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
@@ -12,8 +14,7 @@ export async function invokeEdgeFunction<T = unknown>(
   functionName: string,
   options: InvokeOptions = {}
 ): Promise<T> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, "");
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+  const anonKey = supabaseAnonKey;
   const method = options.method || (options.body ? "POST" : "GET");
 
   const buildHeaders = (base?: Record<string, string>) => {
