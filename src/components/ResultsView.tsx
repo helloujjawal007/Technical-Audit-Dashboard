@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers } from "lucide-react";
+import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers, Trash2 } from "lucide-react";
 import { ScoreGauge } from "@/components/ScoreGauge";
 import { Checklist } from "@/components/Checklist";
 import { SocialPreviewCard } from "@/components/SocialPreviewCard";
@@ -19,6 +19,7 @@ interface ResultsViewProps {
   result: AuditResult;
   url: string;
   auditId?: string;
+  onDelete?: () => void;
 }
 
 type Tab = "overview" | "custom-audit" | "checklist" | "keywords" | "schema" | "social" | "files" | "links" | "link-analysis" | "link-status" | "headings" | "images" | "headers" | "speed" | "recommendations" | "updated-content" | "google-properties";
@@ -43,7 +44,7 @@ const TABS: { id: Tab; label: string; icon: typeof BarChart3 }[] = [
   { id: "headers", label: "HTTP Headers", icon: Server },
 ];
 
-export function ResultsView({ result, url, auditId }: ResultsViewProps) {
+export function ResultsView({ result, url, auditId, onDelete }: ResultsViewProps) {
   const [tab, setTab] = useState<Tab>("overview");
 
   const checks = result.checks || [];
@@ -88,13 +89,27 @@ export function ResultsView({ result, url, auditId }: ResultsViewProps) {
                 {(result.schema || []).length > 0 && <Badge label={`${result.schema.length} Schemas`} color="bg-amber-50 text-amber-700 border border-amber-200" />}
               </div>
 
-              <button
-                onClick={handleExport}
-                className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Export Audit Report</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={onDelete}
+                    className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold border border-rose-200/80 transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
+                    title="Delete this project from history"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Project</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={handleExport}
+                  className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export Audit Report</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

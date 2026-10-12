@@ -16,6 +16,7 @@ import {
   CheckSquare,
   Square,
   X,
+  RotateCcw,
 } from "lucide-react";
 import type { AuditRow } from "@/types";
 import { scoreColor } from "@/types";
@@ -49,13 +50,27 @@ export function HistoryPageView({
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // Deleted benchmark IDs persisted in localStorage
+  const [deletedBenchmarkIds, setDeletedBenchmarkIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem("deleted_benchmark_ids");
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  const activeBenchmarks = useMemo(() => {
+    return SAMPLE_AUDIT_ROWS.filter((b) => !deletedBenchmarkIds.has(b.id));
+  }, [deletedBenchmarkIds]);
+
   // Tab dataset
   const currentDataset = useMemo(() => {
     if (activeTab === "benchmarks") {
-      return SAMPLE_AUDIT_ROWS;
+      return activeBenchmarks;
     }
     return audits;
-  }, [activeTab, audits]);
+  }, [activeTab, activeBenchmarks, audits]);
 
   // Filtered dataset
   const filtered = useMemo(() => {
@@ -105,23 +120,83 @@ export function HistoryPageView({
     }
   };
 
+  const handleDeleteAuditItem = (id: string) => {
+    setDeletingId(id);
+    if (id.startsWith("benchmark-")) {
+      setDeletedBenchmarkIds((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        try {
+          localStorage.setItem("deleted_benchmark_ids", JSON.stringify([...next]));
+        } catch { /* ignore */ }
+        return next;
+      });
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setDeletingId(null);
+    } else {
+      onDeleteAudit(id);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setDeletingId(null);
+    }
+  };
+
   const handleDeleteSelected = () => {
     if (selectedIds.size === 0) return;
     const ids = Array.from(selectedIds);
-    if (onDeleteSelected) {
-      onDeleteSelected(ids);
-    } else {
-      ids.forEach((id) => onDeleteAudit(id));
+    const benchmarkIds = ids.filter((id) => id.startsWith("benchmark-"));
+    const userIds = ids.filter((id) => !id.startsWith("benchmark-"));
+
+    if (benchmarkIds.length > 0) {
+      setDeletedBenchmarkIds((prev) => {
+        const next = new Set(prev);
+        benchmarkIds.forEach((id) => next.add(id));
+        try {
+          localStorage.setItem("deleted_benchmark_ids", JSON.stringify([...next]));
+        } catch { /* ignore */ }
+        return next;
+      });
     }
+
+    if (userIds.length > 0) {
+      if (onDeleteSelected) {
+        onDeleteSelected(userIds);
+      } else {
+        userIds.forEach((id) => onDeleteAudit(id));
+      }
+    }
+
     setSelectedIds(new Set());
   };
 
   const handleConfirmClearAll = () => {
-    if (onClearAllHistory) {
-      onClearAllHistory();
+    if (activeTab === "benchmarks") {
+      const allBenchmarkIds = SAMPLE_AUDIT_ROWS.map((b) => b.id);
+      setDeletedBenchmarkIds(new Set(allBenchmarkIds));
+      try {
+        localStorage.setItem("deleted_benchmark_ids", JSON.stringify(allBenchmarkIds));
+      } catch { /* ignore */ }
+    } else {
+      if (onClearAllHistory) {
+        onClearAllHistory();
+      }
     }
     setSelectedIds(new Set());
     setShowClearConfirm(false);
+  };
+
+  const handleRestoreBenchmarks = () => {
+    setDeletedBenchmarkIds(new Set());
+    try {
+      localStorage.removeItem("deleted_benchmark_ids");
+    } catch { /* ignore */ }
   };
 
   const handleExportCSV = () => {
@@ -254,34 +329,48 @@ export function HistoryPageView({
             }`}
           >
             <Compass className="w-4 h-4 text-teal-600" />
-            <span>Industry Benchmarks ({SAMPLE_AUDIT_ROWS.length})</span>
+            <span>Industry Benchmarks ({activeBenchmarks.length})</span>
           </button>
         </div>
 
-        {/* Bulk Delete & Clear All Actions for Personal History */}
-        {activeTab === "user" && audits.length > 0 && (
-          <div className="flex items-center gap-2 pr-1">
-            {selectedIds.size > 0 && (
-              <button
-                type="button"
-                onClick={handleDeleteSelected}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-xs cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Delete Selected ({selectedIds.size})</span>
-              </button>
-            )}
-
+        {/* Bulk Delete & Clear Actions for Active Tab */}
+        <div className="flex items-center gap-2 pr-1 flex-wrap">
+          {activeTab === "benchmarks" && deletedBenchmarkIds.size > 0 && (
             <button
               type="button"
-              onClick={() => setShowClearConfirm(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold transition-all cursor-pointer"
+              onClick={handleRestoreBenchmarks}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 text-xs font-bold transition-all cursor-pointer"
+              title="Restore standard industry benchmarks"
             >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear All History</span>
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Restore Default Benchmarks</span>
             </button>
-          </div>
-        )}
+          )}
+
+          {currentDataset.length > 0 && (
+            <>
+              {selectedIds.size > 0 && (
+                <button
+                  type="button"
+                  onClick={handleDeleteSelected}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-xs cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete Selected ({selectedIds.size})</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold transition-all cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear All {activeTab === "user" ? "History" : "Projects"}</span>
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Search & Score Filter Controls */}
@@ -339,7 +428,7 @@ export function HistoryPageView({
             ))}
           </div>
 
-          {activeTab === "user" && filtered.length > 0 && (
+          {filtered.length > 0 && (
             <button
               type="button"
               onClick={toggleSelectAll}
@@ -366,11 +455,13 @@ export function HistoryPageView({
             <h3 className="text-base font-bold text-slate-800">
               {activeTab === "user"
                 ? `No Audits Found for ${userEmail || "Your Account"}`
-                : "No Benchmark Audits Match Filter"}
+                : "No Benchmark Projects Found"}
             </h3>
             <p className="text-xs text-slate-500 max-w-md mx-auto">
               {activeTab === "user"
                 ? "You haven't run any inspections under your account yet. Run an audit in the Studio to start your history log, or view benchmark profiles."
+                : deletedBenchmarkIds.size >= SAMPLE_AUDIT_ROWS.length
+                ? "All benchmark projects were removed. You can restore them below."
                 : "No benchmark profiles matched your current search."}
             </p>
           </div>
@@ -383,7 +474,7 @@ export function HistoryPageView({
             >
               Run Audit in Studio
             </button>
-            {activeTab === "user" && (
+            {activeTab === "user" ? (
               <button
                 type="button"
                 onClick={() => setActiveTab("benchmarks")}
@@ -391,7 +482,16 @@ export function HistoryPageView({
               >
                 Explore Benchmark Profiles
               </button>
-            )}
+            ) : deletedBenchmarkIds.size > 0 ? (
+              <button
+                type="button"
+                onClick={handleRestoreBenchmarks}
+                className="px-4 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Restore Benchmark Projects</span>
+              </button>
+            ) : null}
           </div>
         </div>
       ) : (
@@ -411,24 +511,22 @@ export function HistoryPageView({
               >
                 {/* Left: Checkbox + Score + Details */}
                 <div className="flex items-center gap-3.5 min-w-0">
-                  {/* Select Checkbox (only on user tab) */}
-                  {activeTab === "user" && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleSelectOne(audit.id);
-                      }}
-                      className="p-1 rounded-lg text-slate-400 hover:text-teal-600 transition-colors flex-shrink-0 cursor-pointer"
-                      title={isSelected ? "Deselect" : "Select for bulk action"}
-                    >
-                      {isSelected ? (
-                        <CheckSquare className="w-5 h-5 text-teal-600" />
-                      ) : (
-                        <Square className="w-5 h-5 text-slate-300" />
-                      )}
-                    </button>
-                  )}
+                  {/* Select Checkbox (available on all projects) */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelectOne(audit.id);
+                    }}
+                    className="p-1 rounded-lg text-slate-400 hover:text-teal-600 transition-colors flex-shrink-0 cursor-pointer"
+                    title={isSelected ? "Deselect" : "Select project for deletion"}
+                  >
+                    {isSelected ? (
+                      <CheckSquare className="w-5 h-5 text-teal-600" />
+                    ) : (
+                      <Square className="w-5 h-5 text-slate-300" />
+                    )}
+                  </button>
 
                   {audit.score !== null && sc ? (
                     <div
@@ -500,21 +598,18 @@ export function HistoryPageView({
                     <ExternalLink className="w-4 h-4" />
                   </button>
 
-                  {!isBenchmark && (
-                    <button
-                      type="button"
-                      disabled={deletingId === audit.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeletingId(audit.id);
-                        onDeleteAudit(audit.id);
-                      }}
-                      title="Delete this audit from history"
-                      className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-all cursor-pointer disabled:opacity-50"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    disabled={deletingId === audit.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteAuditItem(audit.id);
+                    }}
+                    title="Delete project from history"
+                    className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
 
                   <div className="p-2 rounded-xl text-slate-400 group-hover:text-teal-600 group-hover:translate-x-1 transition-all">
                     <ChevronRight className="w-5 h-5" />
@@ -545,11 +640,22 @@ export function HistoryPageView({
 
             <div className="space-y-1.5">
               <h3 className="text-lg font-extrabold text-slate-900">
-                Delete All Personal Audit History?
+                {activeTab === "user"
+                  ? "Delete All Personal Audit History?"
+                  : "Remove All Benchmark Projects?"}
               </h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                This will permanently delete all {audits.length} audit records associated with your account (
-                <strong className="text-slate-800">{userEmail || "your login"}</strong>). This action cannot be undone.
+                {activeTab === "user" ? (
+                  <>
+                    This will permanently delete all {audits.length} audit records associated with your account (
+                    <strong className="text-slate-800">{userEmail || "your login"}</strong>). This action cannot be undone.
+                  </>
+                ) : (
+                  <>
+                    This will remove all {activeBenchmarks.length} benchmark projects from your history view.
+                    You can restore them anytime using the "Restore Default Benchmarks" button.
+                  </>
+                )}
               </p>
             </div>
 

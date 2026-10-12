@@ -741,7 +741,12 @@ function App() {
                   paused={paused}
                 />
               ) : result && selected ? (
-                <ResultsView result={result} url={selected.url} auditId={selected.id} />
+                <ResultsView
+                  result={result}
+                  url={selected.url}
+                  auditId={selected.id}
+                  onDelete={() => handleDelete(selected.id)}
+                />
               ) : error ? (
                 <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-in">
                   <div className="w-14 h-14 rounded-2xl bg-rose-50 border border-rose-200/80 flex items-center justify-center text-rose-500 mb-3.5">
