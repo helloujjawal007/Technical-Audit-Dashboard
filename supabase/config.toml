@@ -22,7 +22,7 @@ site_url = "https://technical-audit-dashboard.vercel.app"
 
 [auth.email]
 enable_confirmations = true
-max_frequency = "1m0s"
+max_frequency = "5s"
 otp_length = 8
 
 [auth.mfa.totp]

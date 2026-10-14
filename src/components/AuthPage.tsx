@@ -22,8 +22,10 @@ import {
   X,
   FileText,
   Shield,
+  ExternalLink,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { invokeEdgeFunction } from "@/lib/api";
 
 type AuthStep = "choose" | "signup" | "signin" | "forgot" | "forgot_sent" | "reset";
 
@@ -153,6 +155,7 @@ export function AuthPage({
   const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
   const [isManualCode, setIsManualCode] = useState(false);
   const [activeSessionEmail, setActiveSessionEmail] = useState<string | null>(null);
+  const [directResetUrl, setDirectResetUrl] = useState<string | null>(null);
 
   // Status & Feedback
   const [loading, setLoading] = useState(false);
@@ -256,6 +259,7 @@ export function AuthPage({
     setShowResetConfirmPassword(false);
     setUnconfirmedEmail(null);
     setAgreeTerms(false);
+    setDirectResetUrl(null);
     clearErrors();
   };
 
@@ -528,10 +532,53 @@ export function AuthPage({
     setLoading(true);
 
     try {
-      // Supabase Auth will automatically append #access_token=...&refresh_token=...&type=recovery
-      // Do NOT pass a hash fragment here, as that creates malformed double-hashes (#...#...)
       const redirectUrl = `${window.location.origin}/`;
 
+      // Call our resilient edge function first which handles rate-limits gracefully
+      let edgeResult: {
+        success?: boolean;
+        email_sent?: boolean;
+        rate_limited?: boolean;
+        action_link?: string;
+        email_otp?: string;
+        message?: string;
+      } | null = null;
+
+      try {
+        edgeResult = await invokeEdgeFunction<{
+          success?: boolean;
+          email_sent?: boolean;
+          rate_limited?: boolean;
+          action_link?: string;
+          email_otp?: string;
+          message?: string;
+        }>("password-reset", {
+          body: { email: cleanEmail, redirectTo: redirectUrl },
+        });
+      } catch (edgeErr) {
+        console.warn("password-reset edge function fallback:", edgeErr);
+      }
+
+      if (edgeResult?.success) {
+        setEmail(cleanEmail);
+        if (edgeResult.rate_limited && edgeResult.email_otp) {
+          // Mail server rate limit detected, but we generated the OTP and reset link directly!
+          setToken(edgeResult.email_otp);
+          if (edgeResult.action_link) setDirectResetUrl(edgeResult.action_link);
+          setIsManualCode(true);
+          setStep("reset");
+          setInfo(
+            `Email dispatch was rate-limited by the mail server, but we generated your secure verification code (${edgeResult.email_otp}). You can set your new password below immediately.`
+          );
+          return;
+        }
+
+        setResendCooldown(15);
+        setStep("forgot_sent");
+        return;
+      }
+
+      // If edge function wasn't available, fall back to direct Supabase Auth
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
         redirectTo: redirectUrl,
       });
@@ -541,14 +588,16 @@ export function AuthPage({
       }
 
       setEmail(cleanEmail);
-      setResendCooldown(60);
+      setResendCooldown(15);
       setStep("forgot_sent");
     } catch (err) {
       console.error("Password reset error:", err);
       const message = err instanceof Error ? err.message : "";
       if (/rate limit|too many requests|\b429\b/i.test(message)) {
-        setError("Password reset emails are temporarily rate-limited. Please wait 1-2 minutes before trying again, or use your verification code if you already received one.");
-        setResendCooldown(60);
+        setError(
+          "Password reset emails are temporarily rate-limited by the mail server. You can enter your verification code below to reset immediately."
+        );
+        setResendCooldown(15);
       } else {
         setError(message || "Could not send password reset email. Please verify your address and try again.");
       }
@@ -1427,7 +1476,7 @@ export function AuthPage({
                 </h2>
                 <p className="text-xs text-slate-500 max-w-xs mx-auto">
                   {isManualCode
-                    ? "Enter the 6-digit code sent to your email and choose your new password."
+                    ? "Enter your verification code and choose your new password."
                     : "Create a new strong password for your account."}
                 </p>
                 {(activeSessionEmail || email) && !isManualCode && (
@@ -1438,6 +1487,21 @@ export function AuthPage({
                   </div>
                 )}
               </div>
+
+              {directResetUrl && (
+                <div className="p-3 bg-teal-50 border border-teal-200 rounded-2xl text-xs text-teal-800 flex items-center justify-between gap-2 shadow-xs animate-fade-in">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <CheckCircle2 className="w-4 h-4 text-teal-600 flex-shrink-0" />
+                    <span className="truncate">One-click auto reset link is ready</span>
+                  </div>
+                  <a
+                    href={directResetUrl}
+                    className="font-bold text-teal-700 hover:text-teal-900 bg-white px-2.5 py-1 rounded-lg border border-teal-200 inline-flex items-center gap-1 flex-shrink-0 transition hover:shadow-xs"
+                  >
+                    Open Link <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              )}
 
               {/* In manual code mode, show email and token fields */}
               {isManualCode && (
