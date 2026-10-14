@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, Loader2, History, Ghost, BarChart3, ArrowLeft } from "lucide-react";
+import { AlertCircle, Loader2, History, Ghost, BarChart3, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
 import { isSystemAdminUser } from "@/lib/admin";
@@ -40,6 +40,8 @@ function App() {
     clearRecovery,
     authUrlError,
     clearAuthUrlError,
+    emailVerifiedWelcome,
+    clearEmailVerifiedWelcome,
   } = useAuth();
   const [activeNav, setActiveNav] = useState<NavPage>("audit");
   const [audits, setAudits] = useState<AuditRow[]>([]);
@@ -591,6 +593,22 @@ function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {emailVerifiedWelcome && (
+          <div className="flex items-center justify-between p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs sm:text-sm font-semibold shadow-xs animate-fade-in">
+            <div className="flex items-center gap-2.5">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+              <span>Your email address has been verified successfully! Welcome to SEO Audit Pro.</span>
+            </div>
+            <button
+              type="button"
+              onClick={clearEmailVerifiedWelcome}
+              className="text-xs font-bold text-emerald-700 hover:text-emerald-900 ml-4 px-2.5 py-1 rounded-lg hover:bg-emerald-100/60 transition cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Page 1: History & Reports */}
         {activeNav === "history" && (
           <HistoryPageView

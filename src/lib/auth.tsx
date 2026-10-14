@@ -21,6 +21,8 @@ export interface AuthContextValue {
   guest: GuestInfo | null;
   isRecovery: boolean;
   authUrlError: string | null;
+  emailVerifiedWelcome: boolean;
+  clearEmailVerifiedWelcome: () => void;
   clearAuthUrlError: () => void;
   clearRecovery: () => void;
   refreshSubscription: () => Promise<void>;
@@ -45,6 +47,18 @@ function checkIsRecovery(): boolean {
     hash.includes("reset-password") ||
     search.includes("type=recovery") ||
     search.includes("reset=true")
+  );
+}
+
+function checkIsEmailVerifiedRedirect(): boolean {
+  if (typeof window === "undefined") return false;
+  const hash = window.location.hash || "";
+  const search = window.location.search || "";
+  return (
+    hash.includes("type=signup") ||
+    search.includes("type=signup") ||
+    hash.includes("type=email_change") ||
+    search.includes("type=email_change")
   );
 }
 
@@ -84,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [guest, setGuest] = useState<GuestInfo | null>(null);
   const [authUrlError, setAuthUrlError] = useState<string | null>(() => extractUrlAuthError());
+  const [emailVerifiedWelcome, setEmailVerifiedWelcome] = useState<boolean>(() => checkIsEmailVerifiedRedirect());
   const [isRecovery, setIsRecovery] = useState<boolean>(() => {
     // If there is an auth error, don't trap the user in reset mode
     if (extractUrlAuthError()) return false;
@@ -92,6 +107,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearAuthUrlError = useCallback(() => {
     setAuthUrlError(null);
+  }, []);
+
+  const clearEmailVerifiedWelcome = useCallback(() => {
+    setEmailVerifiedWelcome(false);
   }, []);
 
   const clearRecovery = useCallback(() => {
@@ -143,8 +162,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch { /* ignore */ }
 
-    // If an error was in the URL, clean the URL so reloads are clean
-    if (authUrlError && typeof window !== "undefined") {
+    // If an error or verified param was in the URL, clean the URL so reloads are clean
+    if ((authUrlError || emailVerifiedWelcome) && typeof window !== "undefined") {
       window.history.replaceState(null, "", window.location.pathname);
     }
 
@@ -166,6 +185,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch { /* ignore */ }
       }
 
+      if (event === "SIGNED_IN" && checkIsEmailVerifiedRedirect()) {
+        setEmailVerifiedWelcome(true);
+      }
+
       if (newSession?.user) {
         setGuest(null);
         try {
@@ -175,7 +198,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => listener.subscription.unsubscribe();
-  }, [authUrlError]);
+  }, [authUrlError, emailVerifiedWelcome]);
 
   useEffect(() => {
     if (user) {
@@ -237,6 +260,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         guest,
         isRecovery,
         authUrlError,
+        emailVerifiedWelcome,
+        clearEmailVerifiedWelcome,
         clearAuthUrlError,
         clearRecovery,
         refreshSubscription,
