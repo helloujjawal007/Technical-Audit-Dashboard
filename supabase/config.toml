@@ -21,7 +21,7 @@ additional_redirect_urls = [
 site_url = "https://technical-audit-dashboard.vercel.app"
 
 [auth.email]
-enable_confirmations = true
+enable_confirmations = false
 max_frequency = "5s"
 otp_length = 8
 
