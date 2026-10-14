@@ -42,6 +42,8 @@ function App() {
     clearAuthUrlError,
     emailVerifiedWelcome,
     clearEmailVerifiedWelcome,
+    passwordResetSuccess,
+    clearPasswordResetSuccess,
   } = useAuth();
   const [activeNav, setActiveNav] = useState<NavPage>("audit");
   const [audits, setAudits] = useState<AuditRow[]>([]);
@@ -603,6 +605,22 @@ function App() {
               type="button"
               onClick={clearEmailVerifiedWelcome}
               className="text-xs font-bold text-emerald-700 hover:text-emerald-900 ml-4 px-2.5 py-1 rounded-lg hover:bg-emerald-100/60 transition cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {passwordResetSuccess && (
+          <div className="flex items-center justify-between p-4 rounded-2xl bg-teal-50 border border-teal-200 text-teal-900 text-xs sm:text-sm font-semibold shadow-xs animate-fade-in">
+            <div className="flex items-center gap-2.5">
+              <CheckCircle2 className="w-5 h-5 text-teal-600 flex-shrink-0" />
+              <span>Your password has been updated successfully! Welcome back to SEO Audit Pro.</span>
+            </div>
+            <button
+              type="button"
+              onClick={clearPasswordResetSuccess}
+              className="text-xs font-bold text-teal-700 hover:text-teal-900 ml-4 px-2.5 py-1 rounded-lg hover:bg-teal-100/60 transition cursor-pointer"
             >
               Dismiss
             </button>

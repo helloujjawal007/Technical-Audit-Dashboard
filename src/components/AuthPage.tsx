@@ -259,7 +259,20 @@ export function AuthPage({
     clearErrors();
   };
 
+  const handleBackToSignIn = () => {
+    onRecoveryComplete?.();
+    try {
+      sessionStorage.removeItem("supabase_auth_recovery_active");
+    } catch { /* ignore */ }
+    setStep("signin");
+    clearErrors();
+  };
+
   const handleStart = (m: "signin" | "signup") => {
+    onRecoveryComplete?.();
+    try {
+      sessionStorage.removeItem("supabase_auth_recovery_active");
+    } catch { /* ignore */ }
     setStep(m === "signup" ? "signup" : "signin");
     resetFields();
   };
@@ -366,6 +379,11 @@ export function AuthPage({
     if (inFlightRef.current || loading) return;
 
     clearErrors();
+    onRecoveryComplete?.();
+    try {
+      sessionStorage.removeItem("supabase_auth_recovery_active");
+    } catch { /* ignore */ }
+
     const errors: FieldErrors = {};
 
     const cleanInput = email.trim();
@@ -510,7 +528,9 @@ export function AuthPage({
     setLoading(true);
 
     try {
-      const redirectUrl = `${window.location.origin}/?reset=true#type=recovery`;
+      // Supabase Auth will automatically append #access_token=...&refresh_token=...&type=recovery
+      // Do NOT pass a hash fragment here, as that creates malformed double-hashes (#...#...)
+      const redirectUrl = `${window.location.origin}/`;
 
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
         redirectTo: redirectUrl,
@@ -527,7 +547,8 @@ export function AuthPage({
       console.error("Password reset error:", err);
       const message = err instanceof Error ? err.message : "";
       if (/rate limit|too many requests|\b429\b/i.test(message)) {
-        setError("Password reset emails are temporarily rate-limited. Please wait 1-2 minutes before trying again.");
+        setError("Password reset emails are temporarily rate-limited. Please wait 1-2 minutes before trying again, or use your verification code if you already received one.");
+        setResendCooldown(60);
       } else {
         setError(message || "Could not send password reset email. Please verify your address and try again.");
       }
@@ -553,8 +574,8 @@ export function AuthPage({
       }
       if (!trimmedToken) {
         errors.token = "Verification code is required.";
-      } else if (trimmedToken.length < 6) {
-        errors.token = "Verification code must be 6 digits.";
+      } else if (!/^\d{6,8}$/.test(trimmedToken)) {
+        errors.token = "Verification code must be 6 to 8 digits.";
       }
     }
 
@@ -602,7 +623,7 @@ export function AuthPage({
       const { data: sessionData } = await supabase.auth.getSession();
       if (!sessionData?.session) {
         setError(
-          "No active reset session found. Please click the reset link in your email, or enter your 6-digit verification code."
+          "No active reset session found. Please click the reset link in your email, or enter your 6 to 8 digit verification code."
         );
         setIsManualCode(true);
         return;
@@ -616,20 +637,15 @@ export function AuthPage({
         return;
       }
 
-      // Sign out recovery session and redirect to clean sign in
+      // Successfully updated password!
+      // Do NOT sign out — the user has verified ownership and is already authenticated.
+      // Clear recovery state so the application smoothly displays the active dashboard.
       try {
-        await supabase.auth.signOut();
+        sessionStorage.removeItem("supabase_auth_recovery_active");
       } catch { /* ignore */ }
 
       onRecoveryComplete?.();
-      setInfo("Password updated successfully! Please sign in with your new password.");
-      setStep("signin");
-      setEmail(cleanEmail);
-      setPassword("");
-      setNewPassword("");
-      setResetConfirmPassword("");
-      setToken("");
-      setIsManualCode(false);
+      setInfo("Password updated successfully! Welcome back to SEO Audit Pro.");
     } catch (err: unknown) {
       console.error("Password update error:", err);
       setError(err instanceof Error ? err.message : "Something went wrong updating password.");
@@ -1239,10 +1255,7 @@ export function AuthPage({
             <form onSubmit={handleForgotPassword} noValidate className="space-y-4">
               <button
                 type="button"
-                onClick={() => {
-                  setStep("signin");
-                  clearErrors();
-                }}
+                onClick={handleBackToSignIn}
                 className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
@@ -1322,7 +1335,7 @@ export function AuthPage({
                   }}
                   className="text-xs text-slate-500 hover:text-teal-600 font-semibold underline cursor-pointer"
                 >
-                  Have a 6-digit verification code? Enter code manually
+                  Have a verification code? Enter code manually
                 </button>
               </div>
             </form>
@@ -1378,10 +1391,7 @@ export function AuthPage({
 
                 <button
                   type="button"
-                  onClick={() => {
-                    setStep("signin");
-                    clearErrors();
-                  }}
+                  onClick={handleBackToSignIn}
                   className="w-full rounded-2xl bg-teal-600 text-white py-3 font-bold text-xs hover:bg-teal-700 transition flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5" />
@@ -1399,7 +1409,7 @@ export function AuthPage({
                   }}
                   className="text-xs text-slate-500 hover:text-teal-600 font-semibold underline cursor-pointer"
                 >
-                  Have a 6-digit verification code? Enter code manually
+                  Have a verification code? Enter code manually
                 </button>
               </div>
             </div>
@@ -1470,7 +1480,7 @@ export function AuthPage({
 
                   <div>
                     <label htmlFor="reset-token" className="text-xs font-bold text-slate-600 uppercase tracking-wider block mb-1">
-                      6-Digit Verification Code <span className="text-rose-500">*</span>
+                      Verification Code (6–8 Digits) <span className="text-rose-500">*</span>
                     </label>
                     <div className="relative">
                       <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
@@ -1485,7 +1495,7 @@ export function AuthPage({
                           if (fieldErrors.token) setFieldErrors((prev) => ({ ...prev, token: undefined }));
                         }}
                         placeholder="123456"
-                        maxLength={6}
+                        maxLength={8}
                         aria-required="true"
                         aria-invalid={Boolean(fieldErrors.token)}
                         className={`w-full pl-11 pr-4 py-3 rounded-xl border text-sm focus:outline-none focus:ring-2 font-mono tracking-widest text-center ${
@@ -1673,10 +1683,7 @@ export function AuthPage({
               <div className="flex items-center justify-between pt-2 text-xs">
                 <button
                   type="button"
-                  onClick={() => {
-                    setStep("signin");
-                    clearErrors();
-                  }}
+                  onClick={handleBackToSignIn}
                   className="text-slate-500 hover:text-slate-800 font-bold flex items-center gap-1 cursor-pointer"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />

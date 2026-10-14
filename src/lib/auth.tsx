@@ -23,6 +23,8 @@ export interface AuthContextValue {
   authUrlError: string | null;
   emailVerifiedWelcome: boolean;
   clearEmailVerifiedWelcome: () => void;
+  passwordResetSuccess: boolean;
+  clearPasswordResetSuccess: () => void;
   clearAuthUrlError: () => void;
   clearRecovery: () => void;
   refreshSubscription: () => Promise<void>;
@@ -99,6 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [guest, setGuest] = useState<GuestInfo | null>(null);
   const [authUrlError, setAuthUrlError] = useState<string | null>(() => extractUrlAuthError());
   const [emailVerifiedWelcome, setEmailVerifiedWelcome] = useState<boolean>(() => checkIsEmailVerifiedRedirect());
+  const [passwordResetSuccess, setPasswordResetSuccess] = useState<boolean>(false);
   const [isRecovery, setIsRecovery] = useState<boolean>(() => {
     // If there is an auth error, don't trap the user in reset mode
     if (extractUrlAuthError()) return false;
@@ -113,13 +116,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setEmailVerifiedWelcome(false);
   }, []);
 
+  const clearPasswordResetSuccess = useCallback(() => {
+    setPasswordResetSuccess(false);
+  }, []);
+
   const clearRecovery = useCallback(() => {
     setIsRecovery(false);
     try {
       sessionStorage.removeItem(RECOVERY_STORAGE_KEY);
     } catch { /* ignore */ }
     if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", window.location.pathname);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("reset");
+        url.searchParams.delete("type");
+        url.searchParams.delete("recovery");
+        window.history.replaceState(null, "", url.pathname + (url.search ? url.search : ""));
+      } catch {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
     }
   }, []);
 
@@ -164,7 +179,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // If an error or verified param was in the URL, clean the URL so reloads are clean
     if ((authUrlError || emailVerifiedWelcome) && typeof window !== "undefined") {
-      window.history.replaceState(null, "", window.location.pathname);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("error");
+        url.searchParams.delete("error_description");
+        url.searchParams.delete("error_code");
+        window.history.replaceState(null, "", url.pathname + (url.search ? url.search : ""));
+      } catch {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
     }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -185,8 +208,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch { /* ignore */ }
       }
 
-      if (event === "SIGNED_IN" && checkIsEmailVerifiedRedirect()) {
-        setEmailVerifiedWelcome(true);
+      if (event === "SIGNED_IN") {
+        setIsRecovery(false);
+        try {
+          sessionStorage.removeItem(RECOVERY_STORAGE_KEY);
+        } catch { /* ignore */ }
+        if (checkIsEmailVerifiedRedirect()) {
+          setEmailVerifiedWelcome(true);
+        }
+      }
+
+      if (event === "USER_UPDATED") {
+        // Triggered after password update
+        setIsRecovery(false);
+        try {
+          sessionStorage.removeItem(RECOVERY_STORAGE_KEY);
+        } catch { /* ignore */ }
       }
 
       if (newSession?.user) {
@@ -262,6 +299,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         authUrlError,
         emailVerifiedWelcome,
         clearEmailVerifiedWelcome,
+        passwordResetSuccess,
+        clearPasswordResetSuccess,
         clearAuthUrlError,
         clearRecovery,
         refreshSubscription,

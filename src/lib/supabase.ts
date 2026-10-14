@@ -8,11 +8,22 @@ const DEFAULT_SUPABASE_ANON_KEY =
 export const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL?.trim() || DEFAULT_SUPABASE_URL).replace(/\/$/, "");
 export const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || DEFAULT_SUPABASE_ANON_KEY;
 
+// Pre-sanitize hash if URL contains multiple '#' characters from older redirect URLs
+if (typeof window !== "undefined" && window.location.hash) {
+  const rawHash = window.location.hash;
+  if ((rawHash.match(/#/g) || []).length > 1) {
+    try {
+      const fixedHash = rawHash.slice(0, 1) + rawHash.slice(1).replace(/#/g, "&");
+      window.location.hash = fixedHash;
+    } catch { /* ignore */ }
+  }
+}
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    flowType: "pkce",
+    flowType: "implicit",
   },
 });
