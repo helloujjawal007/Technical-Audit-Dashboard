@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers, Trash2, LayoutDashboard } from "lucide-react";
+import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers, Trash2, LayoutDashboard, Send, Loader2 } from "lucide-react";
 import { ScoreGauge } from "@/components/ScoreGauge";
 import { Checklist } from "@/components/Checklist";
 import { SocialPreviewCard } from "@/components/SocialPreviewCard";
@@ -14,6 +14,7 @@ import { GooglePropertiesPanel } from "@/components/GooglePropertiesPanel";
 import { InternalLinkStatusPanel } from "@/components/InternalLinkStatusPanel";
 import { CopyButton } from "@/components/CopyButton";
 import { CATEGORY_META, CATEGORY_ORDER, STATUS_META, type AuditResult, type CheckCategory, type CheckStatus, type CustomAuditData } from "@/types";
+import { formatLodPayload, dispatchToLodEndpoint } from "@/lib/lodWebhook";
 
 interface ResultsViewProps {
   result: AuditResult;
@@ -47,6 +48,9 @@ const TABS: { id: Tab; label: string; icon: typeof BarChart3 }[] = [
 
 export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashboard }: ResultsViewProps) {
   const [tab, setTab] = useState<Tab>("overview");
+  const [isDispatching, setIsDispatching] = useState(false);
+  const [dispatchStatus, setDispatchStatus] = useState<"idle" | "success" | "error">("idle");
+  const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
 
   const checks = result.checks || [];
   const counts = checks.reduce(
@@ -55,11 +59,64 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
   );
 
   const handleExport = () => {
+    let domain = "Domain";
+    try {
+      domain = new URL(url).hostname.replace(/^www\./, "").replace(/[^a-z0-9]/gi, "_");
+    } catch {
+      domain = url.replace(/[^a-z0-9]/gi, "_");
+    }
+    const originalTitle = document.title;
+    document.title = `Technical_Audit_${domain}.pdf`;
     window.print();
+    setTimeout(() => {
+      document.title = originalTitle;
+    }, 1200);
+  };
+
+  const handleDispatchLod = async () => {
+    setIsDispatching(true);
+    setDispatchStatus("idle");
+    setDispatchMessage(null);
+    try {
+      const payload = formatLodPayload(result, url, result.title || undefined, auditId);
+      const res = await dispatchToLodEndpoint(payload);
+      if (res.success) {
+        setDispatchStatus("success");
+        setDispatchMessage(`Delivered to LOD endpoint (${res.statusCode} OK) in ${res.attempts} attempt(s).`);
+      } else {
+        setDispatchStatus("error");
+        setDispatchMessage(res.message);
+      }
+    } catch (e) {
+      setDispatchStatus("error");
+      setDispatchMessage(e instanceof Error ? e.message : "Dispatch failed");
+    } finally {
+      setIsDispatching(false);
+    }
   };
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* ODS Client-Ready PDF / Print Header */}
+      <div className="hidden print:block p-4 mb-4 border-b-2 border-slate-900 bg-white">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-black text-slate-900 tracking-tight">
+              ONLINE DIGITAL SOLUTION (ODS)
+            </h1>
+            <p className="text-xs text-slate-600 font-bold uppercase tracking-wider">
+              Technical Audit & Architecture Diagnostic Report
+            </p>
+          </div>
+          <div className="text-right text-xs text-slate-600">
+            <p className="font-mono font-bold text-slate-900">{url}</p>
+            <p className="text-[11px] text-slate-500">
+              Audit Date: {new Date().toLocaleDateString(undefined, { dateStyle: "long" })}
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Score + summary hero card */}
       <div className="p-6 rounded-2xl bg-gradient-to-b from-white via-white to-slate-50/50 border border-slate-200/80 shadow-sm">
         <div className="flex flex-col md:flex-row gap-6 items-center md:items-start">
@@ -91,6 +148,40 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
+                {/* LOD Webhook Handshake Button */}
+                <button
+                  type="button"
+                  onClick={handleDispatchLod}
+                  disabled={isDispatching}
+                  className={`inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl font-bold border transition-all shadow-xs active:scale-95 print:hidden cursor-pointer ${
+                    dispatchStatus === "success"
+                      ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                      : dispatchStatus === "error"
+                      ? "bg-rose-50 text-rose-800 border-rose-300"
+                      : "bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200"
+                  }`}
+                  title="Dispatch structured audit payload to LOD endpoint"
+                >
+                  {isDispatching ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-600" />
+                  ) : dispatchStatus === "success" ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : dispatchStatus === "error" ? (
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                  ) : (
+                    <Send className="w-3.5 h-3.5 text-teal-600" />
+                  )}
+                  <span>
+                    {isDispatching
+                      ? "Dispatching..."
+                      : dispatchStatus === "success"
+                      ? "LOD Dispatched (200 OK)"
+                      : dispatchStatus === "error"
+                      ? "LOD Failed"
+                      : "Dispatch to LOD"}
+                  </span>
+                </button>
+
                 {onCreateSiteDashboard && (
                   <button
                     type="button"
@@ -120,10 +211,30 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
                   className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Export Audit Report</span>
+                  <span>Export PDF Report</span>
                 </button>
               </div>
             </div>
+
+            {/* LOD Dispatch Notification Message */}
+            {dispatchMessage && (
+              <div
+                className={`p-3 rounded-xl border text-xs font-semibold flex items-center justify-between print:hidden ${
+                  dispatchStatus === "success"
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                    : "bg-rose-50 text-rose-800 border-rose-200"
+                }`}
+              >
+                <span>{dispatchMessage}</span>
+                <button
+                  type="button"
+                  onClick={() => setDispatchMessage(null)}
+                  className="text-[11px] font-bold underline ml-2 cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -72,10 +72,14 @@ export function devBackendPlugin(): Plugin {
 
 
 
-          // Password resets are handled by Supabase Auth, never by a local token.
-          if (endpoint === "password-reset") {
-            return sendJson(res, 410, {
-              error: "Local password reset tokens are disabled. Use Supabase Auth recovery instead.",
+          // 3. LOD Webhook Handshake Endpoint
+          if (endpoint === "webhook-lod" || endpoint === "lod") {
+            const payload = await parseJsonBody(req);
+            return sendJson(res, 200, {
+              status: "received",
+              message: "Audit payload ingested successfully by LOD endpoint.",
+              timestamp: new Date().toISOString(),
+              target: payload.website_url || null,
             });
           }
 

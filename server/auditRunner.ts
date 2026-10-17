@@ -850,26 +850,71 @@ async function auditSinglePage(
   let responseTimeMs = 0;
   let htmlSizeBytes = 0;
 
+  let finalResolvedUrl = targetUrl;
+
   try {
     const start = Date.now();
     const res = await fetch(targetUrl, {
-      headers: { "User-Agent": "SEO-Audit-Bot/1.0 (+https://bolt.new)" },
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (compatible; ODS-AuditBot/2.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
       redirect: "follow",
     });
     responseTimeMs = Date.now() - start;
     pageStatus = res.status;
     pageOk = res.ok;
+    finalResolvedUrl = res.url || targetUrl;
     res.headers.forEach((v, k) => { pageHeaders[k.toLowerCase()] = v; });
     pageHtml = await res.text();
     htmlSizeBytes = pageHtml.length;
+
+    // Detect Cloudflare / Bot Management Challenge Block
+    const isCloudflareBlocked = pageStatus === 403 && (
+      Boolean(pageHeaders["cf-ray"]) ||
+      (pageHeaders["server"]?.toLowerCase().includes("cloudflare") ?? false) ||
+      pageHtml.includes("cf-browser-verification") ||
+      pageHtml.includes("Attention Required! | Cloudflare") ||
+      pageHtml.includes("Just a moment...")
+    );
+    if (isCloudflareBlocked) {
+      throw new Error(`Target domain is protected behind Cloudflare WAF / Bot Challenge (HTTP 403). Automated crawling was restricted.`);
+    }
+
+    if (pageStatus === 404) {
+      throw new Error(`Target page returned HTTP 404 Not Found. Please verify the URL is live.`);
+    }
+
+    if (pageStatus === 502 || pageStatus === 504) {
+      throw new Error(`Gateway Error (HTTP ${pageStatus}). The target host server is unreachable or timed out.`);
+    }
   } catch (e) {
-    fetchError = e instanceof Error ? e.message : "Failed to fetch URL";
+    const raw = e instanceof Error ? e.message : "Failed to fetch URL";
+    if (raw.includes("ENOTFOUND") || raw.includes("EAI_AGAIN")) {
+      fetchError = `DNS lookup failed for ${targetUrl}. The domain does not resolve to an IP address or is parked.`;
+    } else if (raw.includes("timeout") || raw.includes("AbortError")) {
+      fetchError = `Connection timed out waiting for ${targetUrl}. The web server is unresponsive.`;
+    } else {
+      fetchError = raw;
+    }
   }
 
   const checks: CheckResult[] = [];
   const recommendations: { priority: "high" | "medium" | "low"; title: string; detail: string }[] = [];
 
   if (fetchError) throw new Error(fetchError);
+
+  if (finalResolvedUrl !== targetUrl) {
+    checks.push({
+      id: "redirect-followed",
+      label: "Redirect Followed (301/302)",
+      category: "technical",
+      status: "info",
+      detail: `Redirect followed from initial URL to final destination: ${finalResolvedUrl}`,
+      value: finalResolvedUrl,
+    });
+  }
 
   const { doc, text } = stripHtml(pageHtml);
 
