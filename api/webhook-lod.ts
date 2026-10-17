@@ -46,3 +46,4 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     res.end(JSON.stringify({ error: message }));
   }
 }
+

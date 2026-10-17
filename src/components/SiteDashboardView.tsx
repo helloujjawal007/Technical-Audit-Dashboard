@@ -20,9 +20,11 @@ import {
   X,
   ChevronRight,
   TrendingUp,
+  Send,
 } from "lucide-react";
 import type { AuditRow, AuditResult, SiteDashboard, SiteTypeCategory, CheckCategory } from "@/types";
 import { CATEGORY_META } from "@/types";
+import { SendToOutreachModal } from "@/components/SendToOutreachModal";
 
 interface SiteDashboardViewProps {
   audits: AuditRow[];
@@ -90,6 +92,7 @@ export function SiteDashboardView({
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSite, setEditingSite] = useState<SiteDashboard | null>(null);
+  const [showOutreachModal, setShowOutreachModal] = useState(false);
 
   // Form states for create / edit
   const [formName, setFormName] = useState("");
@@ -488,6 +491,17 @@ export function SiteDashboardView({
                 >
                   <FileSearch className="w-3.5 h-3.5" />
                   <span>Crawl Sitemap</span>
+                </button>
+
+                {/* Send to Outreach Dashboard */}
+                <button
+                  type="button"
+                  onClick={() => setShowOutreachModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold text-xs shadow-xs transition cursor-pointer active:scale-95"
+                  title="Push site and attached audit PDF to Outreach Dashboard"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Send to Outreach</span>
                 </button>
 
                 {latestAuditRow && (
@@ -1199,6 +1213,17 @@ export function SiteDashboardView({
             </form>
           </div>
         </div>
+      )}
+
+      {/* Send to Outreach Modal */}
+      {activeSite && (
+        <SendToOutreachModal
+          isOpen={showOutreachModal}
+          onClose={() => setShowOutreachModal(false)}
+          result={latestResult || {}}
+          targetUrl={activeSite.url}
+          defaultBusinessName={activeSite.name}
+        />
       )}
     </div>
   );

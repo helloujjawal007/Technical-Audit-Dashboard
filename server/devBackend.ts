@@ -1,6 +1,9 @@
 import type { Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import fs from "node:fs";
 import { handleSeoAudit } from "./auditRunner";
+import { generateAuditPdfOnDisk } from "./pdfGenerator";
+import type { AuditResult } from "../src/types";
 
 function parseJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
@@ -72,7 +75,68 @@ export function devBackendPlugin(): Plugin {
 
 
 
-          // 3. LOD Webhook Handshake Endpoint
+          // 3. Generate Audit PDF on Disk
+          if (endpoint === "generate-pdf") {
+            const body = await parseJsonBody(req);
+            const pdfRes = await generateAuditPdfOnDisk({
+              domain: String(body.domain || body.website_url || "domain.com"),
+              businessName: String(body.business_name || body.businessName || body.domain || "Client"),
+              websiteUrl: String(body.website_url || body.websiteUrl || body.url || ""),
+              result: (body.result as Partial<AuditResult>) || {},
+              takeaways: (body.audit_key_takeaways || body.takeaways) as string | undefined,
+            });
+            return sendJson(res, 200, pdfRes);
+          }
+
+          // 4. Outreach Bridge: Import Lead into Outreach Dashboard (localhost:5001)
+          if (endpoint === "outreach-bridge" || endpoint === "import-audit") {
+            const body = await parseJsonBody(req);
+            let pdfPath = body.audit_pdf_path as string | undefined;
+            let pdfName = body.audit_pdf_name as string | undefined;
+
+            // Ensure a physical PDF report exists on disk
+            if (!pdfPath || !fs.existsSync(pdfPath)) {
+              try {
+                const pdfGen = await generateAuditPdfOnDisk({
+                  domain: String(body.website_url || body.domain || "target.com"),
+                  businessName: String(body.business_name || "Prospect"),
+                  websiteUrl: String(body.website_url || ""),
+                  result: (body.result as Partial<AuditResult>) || {},
+                  takeaways: body.audit_key_takeaways as string | undefined,
+                });
+                pdfPath = pdfGen.absolutePath;
+                pdfName = pdfGen.filename;
+              } catch (e) {
+                console.error("[PDF Generation Error during outreach bridge]:", e);
+              }
+            }
+
+            const outreachPayload = {
+              business_name: body.business_name || "Website Lead",
+              website_url: body.website_url || "",
+              email: body.email || "",
+              first_name: body.first_name || "",
+              category: body.category || "General Website",
+              location: body.location || "",
+              audit_key_takeaways:
+                body.audit_key_takeaways ||
+                "Server TTFB latency bottlenecks and missing Schema.org structured entity graphs",
+              audit_pdf_name: pdfName || `${String(body.website_url).replace(/^https?:\/\//, "")}_technical_audit.pdf`,
+              audit_pdf_path: pdfPath || "",
+              enroll_autopilot: body.enroll_autopilot !== false,
+            };
+
+            const response = await fetch("http://localhost:5001/api/leads/import-audit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(outreachPayload),
+            });
+
+            const data = await response.json();
+            return sendJson(res, response.status, data);
+          }
+
+          // 5. LOD Webhook Handshake Endpoint
           if (endpoint === "webhook-lod" || endpoint === "lod") {
             const payload = await parseJsonBody(req);
             return sendJson(res, 200, {

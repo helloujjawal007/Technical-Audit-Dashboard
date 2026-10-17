@@ -15,6 +15,7 @@ import { InternalLinkStatusPanel } from "@/components/InternalLinkStatusPanel";
 import { CopyButton } from "@/components/CopyButton";
 import { CATEGORY_META, CATEGORY_ORDER, STATUS_META, type AuditResult, type CheckCategory, type CheckStatus, type CustomAuditData } from "@/types";
 import { formatLodPayload, dispatchToLodEndpoint } from "@/lib/lodWebhook";
+import { SendToOutreachModal } from "@/components/SendToOutreachModal";
 
 interface ResultsViewProps {
   result: AuditResult;
@@ -51,6 +52,7 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
   const [isDispatching, setIsDispatching] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState<"idle" | "success" | "error">("idle");
   const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
+  const [showOutreachModal, setShowOutreachModal] = useState(false);
 
   const checks = result.checks || [];
   const counts = checks.reduce(
@@ -180,6 +182,17 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
                       ? "LOD Failed"
                       : "Dispatch to LOD"}
                   </span>
+                </button>
+
+                {/* Send to Outreach Dashboard Button */}
+                <button
+                  type="button"
+                  onClick={() => setShowOutreachModal(true)}
+                  className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
+                  title="Push lead and attached audit PDF to Outreach Dashboard (Autopilot)"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Send to Outreach</span>
                 </button>
 
                 {onCreateSiteDashboard && (
@@ -319,6 +332,15 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
         {tab === "images" && <ImagesView images={result.images} />}
         {tab === "headers" && <HeadersView headers={result.headers} />}
       </div>
+
+      {/* Send to Outreach Dashboard Modal */}
+      <SendToOutreachModal
+        isOpen={showOutreachModal}
+        onClose={() => setShowOutreachModal(false)}
+        result={result}
+        targetUrl={url}
+        defaultBusinessName={result.title || undefined}
+      />
     </div>
   );
 }
