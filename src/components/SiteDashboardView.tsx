@@ -276,7 +276,7 @@ export function SiteDashboardView({
   // Quick Action: Run Audit
   const handleQuickRunAudit = (depth: "basic" | "standard" | "deep" = "deep") => {
     if (!activeSite) return;
-    onRunAudit(activeSite.url, "single", depth);
+    onRunAudit(activeSite.url, "crawl", depth);
   };
 
   const handleQuickCrawl = () => {

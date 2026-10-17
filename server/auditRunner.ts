@@ -1720,15 +1720,24 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
   const { content: sitemapContent, url: sitemapUrl } = await fetchSitemap(origin);
 
   if (mode === "crawl") {
-    if (!sitemapContent) {
-      return {
-        error: "No sitemap found. Cannot crawl without a sitemap.xml or sitemap_index.xml.",
-        urls: [],
-      };
+    let urls: string[] = [];
+    let sitemapsChecked: string[] = [];
+    if (sitemapContent) {
+      const resolved = await resolveAllSitemapUrls(sitemapContent, sitemapUrl || "");
+      urls = resolved.urls;
+      sitemapsChecked = resolved.sitemapsChecked;
     }
-    const { urls, sitemapsChecked } = await resolveAllSitemapUrls(sitemapContent, sitemapUrl || "");
+
+    if (!urls || urls.length === 0) {
+      urls = await discoverCustomUrls(targetUrl, sitemapContent, sitemapUrl);
+    }
+
+    if (!urls || urls.length === 0) {
+      urls = [targetUrl];
+    }
+
     return {
-      urls,
+      urls: [...new Set(urls)],
       sitemapUrl,
       sitemapsChecked,
       robotsContent,

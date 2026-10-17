@@ -1730,18 +1730,27 @@ Deno.serve(async (req: Request) => {
     // Fetch sitemap with fallback
     const { content: sitemapContent, url: sitemapUrl } = await fetchSitemap(origin);
 
-    // ===== CRAWL MODE: return list of URLs from sitemap =====
+    // ===== CRAWL MODE: return list of URLs from sitemap or internal crawl =====
     if (mode === "crawl") {
-      if (!sitemapContent) {
-        return new Response(JSON.stringify({
-          error: "No sitemap found. Cannot crawl without a sitemap.xml or sitemap_index.xml.",
-          urls: [],
-        }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      let urls: string[] = [];
+      let sitemapsChecked: string[] = [];
+      if (sitemapContent) {
+        const resolved = await resolveAllSitemapUrls(sitemapContent, sitemapUrl || "");
+        urls = resolved.urls;
+        sitemapsChecked = resolved.sitemapsChecked;
       }
 
-      const { urls, sitemapsChecked } = await resolveAllSitemapUrls(sitemapContent, sitemapUrl || "");
+      if (!urls || urls.length === 0) {
+        urls = await discoverCustomUrls(targetUrl, sitemapContent, sitemapUrl);
+      }
+
+      if (!urls || urls.length === 0) {
+        urls = [targetUrl];
+      }
+
+      const uniqueUrls = [...new Set(urls)];
       return new Response(JSON.stringify({
-        urls,
+        urls: uniqueUrls,
         sitemapUrl,
         sitemapsChecked,
         robotsContent,

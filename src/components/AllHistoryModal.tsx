@@ -14,9 +14,9 @@ interface AllHistoryModalProps {
 type IconComponent = typeof Globe;
 
 const TYPE_TABS: { key: string; label: string; icon: IconComponent; activeBg: string; activeText: string; color: string; bg: string }[] = [
-  { key: "single", label: "Single", icon: Globe, activeBg: "bg-blue-600", activeText: "text-white", color: "text-blue-600", bg: "bg-blue-50" },
-  { key: "multiple", label: "Multiple", icon: List, activeBg: "bg-slate-700", activeText: "text-white", color: "text-slate-600", bg: "bg-slate-100" },
   { key: "crawl", label: "Full Domain", icon: FileSearch, activeBg: "bg-emerald-600", activeText: "text-white", color: "text-emerald-600", bg: "bg-emerald-50" },
+  { key: "multiple", label: "Multiple", icon: List, activeBg: "bg-slate-700", activeText: "text-white", color: "text-slate-600", bg: "bg-slate-100" },
+  { key: "single", label: "Single", icon: Globe, activeBg: "bg-blue-600", activeText: "text-white", color: "text-blue-600", bg: "bg-blue-50" },
   { key: "staging", label: "Staging", icon: FlaskConical, activeBg: "bg-amber-600", activeText: "text-white", color: "text-amber-600", bg: "bg-amber-50" },
 ];
 
@@ -69,7 +69,7 @@ export function AllHistoryModal({ open, onClose, onSelect, onDelete }: AllHistor
   const [allAudits, setAllAudits] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<string>("single");
+  const [activeTab, setActiveTab] = useState<string>("crawl");
 
   useEffect(() => {
     if (!open || !user) return;

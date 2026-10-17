@@ -175,7 +175,7 @@ function App() {
     });
   };
 
-  const handleAudit = async (input: string, mode: AuditMode, depth: AuditDepth, _extractionFields?: CustomExtractionFields) => {
+  const handleAudit = async (input: string, mode: AuditMode, depth: AuditDepth) => {
     // Check credits — user or guest
     if (user) {
       const usage = await getCreditUsage(user.id, mode);
@@ -203,15 +203,13 @@ function App() {
     pauseRef.current = false;
     cancelRef.current = false;
 
-    if (mode === "single" || mode === "custom") {
-      setView("single");
-      await handleSingleAudit(normalizeUrl(input), mode, depth, _extractionFields);
-    } else if (mode === "multiple" || mode === "staging") {
+    if (mode === "multiple" || mode === "staging") {
       setView("crawl");
       await handleMultipleAudit(input, mode, depth);
     } else {
+      // Always perform full site audit across all pages
       setView("crawl");
-      await handleCrawlAudit(normalizeUrl(input), mode, depth);
+      await handleCrawlAudit(normalizeUrl(input), "crawl", depth);
     }
 
     setLoading(false);
@@ -224,62 +222,6 @@ function App() {
       await recordGuestCreditUsage(guest.ipKey);
       const updated = await getGuestCreditUsage(guest.ipKey);
       setGuestCredits(updated.remaining);
-    }
-  };
-
-  const handleSingleAudit = async (normalizedUrl: string, auditType: AuditMode, depth: AuditDepth, extractionFields?: CustomExtractionFields) => {
-    let newAudit: AuditRow | null = null;
-
-    if (user) {
-      const { data, error } = await supabase
-        .from("seo_audits")
-        .insert({
-          url: normalizedUrl,
-          status: "running",
-          audit_type: auditType,
-          audit_depth: depth,
-          user_id: user.id,
-        })
-        .select()
-        .single();
-      if (error || !data) {
-        setError("Could not start the audit. Please try again.");
-        return;
-      }
-      newAudit = data as AuditRow;
-    }
-
-    if (newAudit) {
-      setAudits((prev) => [newAudit, ...prev]);
-      setSelected(newAudit);
-    } else {
-      // Guest user: create a temporary pseudo-audit so results can display
-      setSelected({
-        id: `guest-${Date.now()}`,
-        url: normalizedUrl,
-        status: "running",
-        score: null,
-        title: null,
-        description: null,
-        checks: null,
-        error: null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        result_data: null,
-        user_id: null,
-        audit_type: auditType,
-        audit_depth: depth,
-      });
-    }
-
-    try {
-      const data = await auditSinglePage(normalizedUrl, newAudit?.id, depth, auditType, extractionFields);
-      setResult(data);
-      if (user) await fetchAudits();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Audit failed";
-      setError(msg);
-      if (user) await fetchAudits();
     }
   };
 
@@ -777,7 +719,7 @@ function App() {
                 </div>
               ) : (
                 <ReadyHeroState
-                  onSelectSample={(sampleUrl) => handleAudit(sampleUrl, "single", "standard")}
+                  onSelectSample={(sampleUrl) => handleAudit(sampleUrl, "crawl", "standard")}
                 />
               )}
             </section>

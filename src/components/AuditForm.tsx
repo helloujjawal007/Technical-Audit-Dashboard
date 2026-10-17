@@ -66,7 +66,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
   const [siteType, setSiteType] = useState<SiteType>("live");
   const [url, setUrl] = useState("");
   const [multiUrls, setMultiUrls] = useState("");
-  const [mode, setMode] = useState<AuditMode>("single");
+  const [mode, setMode] = useState<AuditMode>("crawl");
   const [depth, setDepth] = useState<AuditDepth>("standard");
   const [extractionFields, setExtractionFields] = useState<CustomExtractionFields>(DEFAULT_EXTRACTION_FIELDS);
 
@@ -76,9 +76,8 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
   const isDisabled = loading || (needsTextarea ? !multiUrls.trim() : !url.trim());
 
   const availableModes: { key: AuditMode; label: string; icon: React.ReactNode }[] = [
-    { key: "single", label: "Single Page", icon: <Globe className="w-3.5 h-3.5" /> },
+    { key: "crawl", label: "Full Site Crawl", icon: <FileSearch className="w-3.5 h-3.5" /> },
     { key: "multiple", label: "Multiple Pages", icon: <List className="w-3.5 h-3.5" /> },
-    { key: "crawl", label: "Full Domain Crawl", icon: <FileSearch className="w-3.5 h-3.5" /> },
   ];
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -90,24 +89,20 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
   };
 
   const buttonLabel = loading
-    ? effectiveMode === "crawl"
-      ? "Crawling domain..."
-      : effectiveMode === "staging"
+    ? effectiveMode === "staging"
       ? "Auditing staging..."
       : effectiveMode === "multiple"
       ? "Auditing batch..."
       : effectiveMode === "custom"
-      ? "Running custom audit..."
-      : "Running Deep SEO Audit..."
-    : effectiveMode === "crawl"
-    ? "Launch Domain Crawl"
+      ? "Running custom extraction..."
+      : "Crawling & Auditing Full Site..."
     : effectiveMode === "staging"
     ? "Audit Staging Site"
     : effectiveMode === "multiple"
     ? "Audit All Pages"
     : effectiveMode === "custom"
     ? "Run Custom Extraction"
-    : "Launch SEO Audit";
+    : "Launch Full Site Audit";
 
   return (
     <form onSubmit={handleSubmit} className="w-full space-y-5">
@@ -131,7 +126,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
                 type="button"
                 onClick={() => {
                   setDepth(option.key);
-                  if (mode === "custom") setMode("single");
+                  if (mode === "custom") setMode("crawl");
                 }}
                 disabled={loading}
                 className={`relative flex items-start gap-3 p-3.5 rounded-2xl border text-left transition-all duration-200 cursor-pointer ${
@@ -233,7 +228,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
               type="button"
               onClick={() => {
                 setSiteType("live");
-                setMode("single");
+                setMode("crawl");
               }}
               disabled={loading}
               className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all ${
@@ -341,7 +336,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
       {/* 4. Target URL / Batch URLs Input */}
       <div>
         <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">
-          {needsTextarea ? (isStaging ? "Staging URLs (One per line)" : "Batch URLs (One per line)") : "Target Website URL"}
+          {needsTextarea ? (isStaging ? "Staging URLs (One per line)" : "Batch URLs (One per line)") : "Target Website Domain (Full Site Audit)"}
         </label>
 
         {needsTextarea ? (
@@ -370,7 +365,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
                 const val = e.target.value.trim();
                 setUrl(val ? `https://${val.replace(/^https?:\/\//i, "")}` : "");
               }}
-              placeholder="example.com/target-page"
+              placeholder="example.com"
               disabled={loading}
               className="w-full pl-28 pr-10 py-3.5 rounded-2xl border border-slate-200 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 transition-all shadow-xs text-sm font-medium"
             />
@@ -423,11 +418,9 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
       </div>
 
       <p className="text-[11px] text-slate-400 text-center leading-relaxed">
-        {effectiveMode === "crawl"
-          ? "Parallel crawl automatically discovers sitemap and audits every URL."
-          : effectiveMode === "multiple" || effectiveMode === "staging"
-          ? "Inspects multiple endpoints simultaneously with performance profiling."
-          : "Executes 90+ deep tests including Core Web Vitals, Schema, Robots, Social & Links."}
+        {effectiveMode === "multiple" || effectiveMode === "staging"
+          ? "Inspects multiple specified endpoints simultaneously with performance profiling."
+          : "Full site crawl automatically inspects sitemaps and discovers internal links to audit all pages on the site."}
       </p>
     </form>
   );

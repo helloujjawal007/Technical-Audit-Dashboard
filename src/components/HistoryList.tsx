@@ -14,9 +14,9 @@ interface HistoryListProps {
 type IconComponent = typeof Globe;
 
 const TYPE_TABS: { key: string; label: string; icon: IconComponent; color: string; bg: string; activeBg: string; activeText: string }[] = [
-  { key: "single", label: "Single", icon: Globe, color: "text-blue-600", bg: "bg-blue-50", activeBg: "bg-blue-600", activeText: "text-white" },
-  { key: "multiple", label: "Multiple", icon: List, color: "text-slate-600", bg: "bg-slate-100", activeBg: "bg-slate-700", activeText: "text-white" },
   { key: "crawl", label: "Site Crawl", icon: FileSearch, color: "text-emerald-600", bg: "bg-emerald-50", activeBg: "bg-emerald-600", activeText: "text-white" },
+  { key: "multiple", label: "Multiple", icon: List, color: "text-slate-600", bg: "bg-slate-100", activeBg: "bg-slate-700", activeText: "text-white" },
+  { key: "single", label: "Single", icon: Globe, color: "text-blue-600", bg: "bg-blue-50", activeBg: "bg-blue-600", activeText: "text-white" },
   { key: "staging", label: "Staging", icon: FlaskConical, color: "text-amber-600", bg: "bg-amber-50", activeBg: "bg-amber-600", activeText: "text-white" },
 ];
 
@@ -68,7 +68,7 @@ function groupByDate(audits: AuditRow[]): { label: string; audits: AuditRow[] }[
 
 export function HistoryList({ audits, onSelect, selectedId, onDelete, onRefresh }: HistoryListProps) {
   const [pollingIds, setPollingIds] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState<string>("single");
+  const [activeTab, setActiveTab] = useState<string>("crawl");
 
   useEffect(() => {
     const pending = audits.filter((a) => a.status === "pending" || a.status === "running");
