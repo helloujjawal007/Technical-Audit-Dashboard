@@ -1,40 +1,41 @@
 import {
   FileSearch,
+  LayoutDashboard,
   LogOut,
   Ghost,
   ShieldCheck,
   History,
-  GitCompare,
-  Settings,
 } from "lucide-react";
 
-export type NavPage = "audit" | "history" | "compare" | "settings";
+export type NavPage = "audit" | "site-dashboard";
 
 interface NavBarProps {
   userName: string;
+  userEmail?: string | null;
   isGuest: boolean;
   isAdmin?: boolean;
   guestCredits: number | null;
   activeNav: NavPage;
   onNavChange: (page: NavPage) => void;
+  onOpenHistory: () => void;
   onSignOut: () => void;
   onExitGuest: () => void;
 }
 
 const NAV_ITEMS: { key: NavPage; label: string; icon: typeof FileSearch }[] = [
   { key: "audit", label: "Audit Studio", icon: FileSearch },
-  { key: "history", label: "History & Reports", icon: History },
-  { key: "compare", label: "Compare & Diff", icon: GitCompare },
-  { key: "settings", label: "Settings", icon: Settings },
+  { key: "site-dashboard", label: "Site Dashboard", icon: LayoutDashboard },
 ];
 
 export function NavBar({
   userName,
+  userEmail,
   isGuest,
   isAdmin,
   guestCredits,
   activeNav,
   onNavChange,
+  onOpenHistory,
   onSignOut,
   onExitGuest,
 }: NavBarProps) {
@@ -65,7 +66,9 @@ export function NavBar({
                   Live
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 hidden sm:block">Deep Technical & On-Page Intelligence</p>
+              <p className="text-[11px] text-slate-400 hidden sm:block">
+                Deep Technical & On-Page Intelligence
+              </p>
             </div>
           </div>
 
@@ -79,7 +82,7 @@ export function NavBar({
                   key={item.key}
                   type="button"
                   onClick={() => onNavChange(item.key)}
-                  className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer ${
+                  className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer ${
                     isActive
                       ? "bg-white text-slate-900 shadow-xs shadow-slate-200"
                       : "text-slate-500 hover:text-slate-900 hover:bg-white/50"
@@ -92,8 +95,21 @@ export function NavBar({
             })}
           </nav>
 
-          {/* User controls */}
-          <div className="flex items-center gap-2.5">
+          {/* Right Action & User Controls */}
+          <div className="flex items-center gap-2 sm:gap-2.5">
+            {/* History Modal Trigger */}
+            {!isGuest && (
+              <button
+                type="button"
+                onClick={onOpenHistory}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200/80 transition-all text-xs font-bold cursor-pointer active:scale-95"
+                title="View full audit history modal"
+              >
+                <History className="w-3.5 h-3.5 text-slate-500" />
+                <span className="hidden sm:inline">History</span>
+              </button>
+            )}
+
             {isGuest && guestCredits !== null && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-teal-50/80 border border-teal-200/80 text-teal-700 shadow-xs animate-fade-in">
                 <Ghost className="w-3.5 h-3.5 text-teal-600 animate-pulse" />
@@ -116,8 +132,8 @@ export function NavBar({
               <div className="flex items-center gap-2">
                 {/* User Pill */}
                 <div
-                  onClick={() => onNavChange("settings")}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/80 border border-slate-200/80 shadow-xs cursor-pointer hover:bg-slate-200/60 transition-all"
+                  title={userEmail || userName}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/80 border border-slate-200/80 shadow-xs select-none"
                 >
                   <div className="w-6 h-6 rounded-lg bg-teal-600 text-white flex items-center justify-center text-xs font-bold shadow-xs">
                     {userName.charAt(0).toUpperCase()}
@@ -129,7 +145,7 @@ export function NavBar({
                   {isAdmin && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-gradient-to-r from-amber-500/15 to-orange-500/15 text-amber-800 border border-amber-300/60 shadow-xs">
                       <ShieldCheck className="w-3 h-3 text-amber-600" />
-                      <span>Admin • 200/day</span>
+                      <span>Admin</span>
                     </span>
                   )}
                 </div>
@@ -170,6 +186,16 @@ export function NavBar({
             </button>
           );
         })}
+        {!isGuest && (
+          <button
+            type="button"
+            onClick={onOpenHistory}
+            className="inline-flex flex-col items-center gap-0.5 px-3 py-1 rounded-xl text-[11px] font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
+          >
+            <History className="w-4 h-4 text-slate-400" />
+            <span>History</span>
+          </button>
+        )}
       </div>
     </header>
   );

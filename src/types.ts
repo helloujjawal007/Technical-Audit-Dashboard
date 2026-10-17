@@ -316,3 +316,18 @@ export function scoreColor(score: number): { text: string; ring: string; bg: str
   if (score >= 50) return { text: "text-amber-600", ring: "stroke-amber-500", bg: "bg-amber-500", label: "Needs Work" };
   return { text: "text-rose-600", ring: "stroke-rose-500", bg: "bg-rose-500", label: "Poor" };
 }
+
+export type SiteTypeCategory = "ecommerce" | "blog" | "saas" | "corporate" | "agency" | "portfolio" | "general";
+
+export interface SiteDashboard {
+  id: string;
+  name: string;
+  domain: string;
+  url: string;
+  siteType: SiteTypeCategory;
+  targetKeywords: string[];
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+

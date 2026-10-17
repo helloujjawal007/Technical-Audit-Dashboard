@@ -14,9 +14,7 @@ import { CreditDisplay } from "@/components/CreditDisplay";
 import { NavBar, type NavPage } from "@/components/NavBar";
 import { ModernScanningState } from "@/components/ModernScanningState";
 import { ReadyHeroState } from "@/components/ReadyHeroState";
-import { HistoryPageView } from "@/components/HistoryPageView";
-import { ComparePageView } from "@/components/ComparePageView";
-import { SettingsPageView } from "@/components/SettingsPageView";
+import { SiteDashboardView } from "@/components/SiteDashboardView";
 import { getCreditUsage, getAllCreditUsage, recordCreditUsage, canStartAudit, getGuestCreditUsage, recordGuestCreditUsage, canStartGuestAudit } from "@/lib/credits";
 import type { AuditResult, AuditRow, AuditMode, AuditDepth, CrawlPageResult, CustomExtractionFields } from "@/types";
 
@@ -456,27 +454,6 @@ function App() {
     await refreshCreditUsage();
   };
 
-  const handleClearAllHistory = async () => {
-    if (user) {
-      await supabase.from("seo_audits").delete().eq("user_id", user.id);
-    }
-    setAudits([]);
-    setSelected(null);
-    setResult(null);
-    await refreshCreditUsage();
-  };
-
-  const handleDeleteSelected = async (ids: string[]) => {
-    if (ids.length === 0) return;
-    await supabase.from("seo_audits").delete().in("id", ids);
-    setAudits((prev) => prev.filter((a) => !ids.includes(a.id)));
-    if (selected && ids.includes(selected.id)) {
-      setSelected(null);
-      setResult(null);
-    }
-    await refreshCreditUsage();
-  };
-
   if (sharedLoading) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center">
@@ -585,11 +562,13 @@ function App() {
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       <NavBar
         userName={userName}
+        userEmail={user?.email || null}
         isGuest={isGuest}
         isAdmin={isAdmin}
         guestCredits={guestCredits}
         activeNav={activeNav}
         onNavChange={setActiveNav}
+        onOpenHistory={() => setShowAllHistory(true)}
         onSignOut={signOut}
         onExitGuest={exitGuest}
       />
@@ -627,37 +606,25 @@ function App() {
           </div>
         )}
 
-        {/* Page 1: History & Reports */}
-        {activeNav === "history" && (
-          <HistoryPageView
+        {/* Site Dashboard Mode */}
+        {activeNav === "site-dashboard" && (
+          <SiteDashboardView
             audits={audits}
-            userEmail={user?.email || null}
+            userId={user?.id || null}
+            onRunAudit={(targetUrl, mode, depth) => {
+              setActiveNav("audit");
+              handleAudit(targetUrl, mode, depth);
+            }}
             onSelectAudit={(a) => {
               handleSelect(a);
               setActiveNav("audit");
             }}
-            onDeleteAudit={handleDelete}
-            onDeleteSelected={handleDeleteSelected}
-            onClearAllHistory={handleClearAllHistory}
-            onStartNewAudit={() => setActiveNav("audit")}
+            onOpenAuditStudio={() => setActiveNav("audit")}
+            initialSiteUrl={selected?.url || null}
           />
         )}
 
-        {/* Page 2: Compare & Diff */}
-        {activeNav === "compare" && (
-          <ComparePageView
-            audits={audits}
-            onSelectAudit={(a) => {
-              handleSelect(a);
-              setActiveNav("audit");
-            }}
-          />
-        )}
-
-        {/* Page 3: Settings & Subscription */}
-        {activeNav === "settings" && <SettingsPageView />}
-
-        {/* Page 4: Primary Audit Studio */}
+        {/* Primary Audit Studio */}
         {activeNav === "audit" && (
           <div className="space-y-6">
             <section className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
@@ -745,7 +712,7 @@ function App() {
 
                       <button
                         type="button"
-                        onClick={() => setActiveNav("history")}
+                        onClick={() => setShowAllHistory(true)}
                         className="text-xs font-bold text-teal-600 hover:text-teal-700 transition-colors cursor-pointer"
                       >
                         View All ({audits.length})
@@ -794,6 +761,7 @@ function App() {
                   url={selected.url}
                   auditId={selected.id}
                   onDelete={() => handleDelete(selected.id)}
+                  onCreateSiteDashboard={() => setActiveNav("site-dashboard")}
                 />
               ) : error ? (
                 <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-in">

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers, Trash2 } from "lucide-react";
+import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers, Trash2, LayoutDashboard } from "lucide-react";
 import { ScoreGauge } from "@/components/ScoreGauge";
 import { Checklist } from "@/components/Checklist";
 import { SocialPreviewCard } from "@/components/SocialPreviewCard";
@@ -20,6 +20,7 @@ interface ResultsViewProps {
   url: string;
   auditId?: string;
   onDelete?: () => void;
+  onCreateSiteDashboard?: (url: string, title?: string | null) => void;
 }
 
 type Tab = "overview" | "custom-audit" | "checklist" | "keywords" | "schema" | "social" | "files" | "links" | "link-analysis" | "link-status" | "headings" | "images" | "headers" | "speed" | "recommendations" | "updated-content" | "google-properties";
@@ -44,7 +45,7 @@ const TABS: { id: Tab; label: string; icon: typeof BarChart3 }[] = [
   { id: "headers", label: "HTTP Headers", icon: Server },
 ];
 
-export function ResultsView({ result, url, auditId, onDelete }: ResultsViewProps) {
+export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashboard }: ResultsViewProps) {
   const [tab, setTab] = useState<Tab>("overview");
 
   const checks = result.checks || [];
@@ -90,6 +91,18 @@ export function ResultsView({ result, url, auditId, onDelete }: ResultsViewProps
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
+                {onCreateSiteDashboard && (
+                  <button
+                    type="button"
+                    onClick={() => onCreateSiteDashboard(url, result.title)}
+                    className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-teal-50 hover:bg-teal-100/80 text-teal-800 font-bold border border-teal-200/80 transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
+                    title="Create or open dedicated Site Dashboard for this domain"
+                  >
+                    <LayoutDashboard className="w-3.5 h-3.5 text-teal-600" />
+                    <span>Site Dashboard</span>
+                  </button>
+                )}
+
                 {onDelete && (
                   <button
                     type="button"
