@@ -5,6 +5,7 @@ import {
   Ghost,
   ShieldCheck,
   History,
+  Zap,
 } from "lucide-react";
 
 export type NavPage = "audit" | "site-dashboard";
@@ -18,6 +19,8 @@ interface NavBarProps {
   activeNav: NavPage;
   onNavChange: (page: NavPage) => void;
   onOpenHistory: () => void;
+  onOpenStealthQueue?: () => void;
+  stealthActiveCount?: number;
   onSignOut: () => void;
   onExitGuest: () => void;
 }
@@ -36,6 +39,8 @@ export function NavBar({
   activeNav,
   onNavChange,
   onOpenHistory,
+  onOpenStealthQueue,
+  stealthActiveCount = 0,
   onSignOut,
   onExitGuest,
 }: NavBarProps) {
@@ -109,6 +114,26 @@ export function NavBar({
                 <span className="hidden sm:inline">History</span>
               </button>
             )}
+
+            {/* Stealth Queue Modal Trigger */}
+            <button
+              type="button"
+              onClick={onOpenStealthQueue}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all text-xs font-bold cursor-pointer active:scale-95 ${
+                stealthActiveCount > 0
+                  ? "bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border-slate-200/80"
+              }`}
+              title="Stealth Mode Background Queue (Large Sites)"
+            >
+              <Zap className={`w-3.5 h-3.5 ${stealthActiveCount > 0 ? "text-indigo-600 animate-pulse" : "text-slate-500"}`} />
+              <span className="hidden sm:inline">Stealth Queue</span>
+              {stealthActiveCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-indigo-600 text-white">
+                  {stealthActiveCount}
+                </span>
+              )}
+            </button>
 
             {isGuest && guestCredits !== null && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-teal-50/80 border border-teal-200/80 text-teal-700 shadow-xs animate-fade-in">
@@ -196,6 +221,16 @@ export function NavBar({
             <span>History</span>
           </button>
         )}
+        <button
+          type="button"
+          onClick={onOpenStealthQueue}
+          className={`inline-flex flex-col items-center gap-0.5 px-3 py-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+            stealthActiveCount > 0 ? "text-indigo-600 font-extrabold" : "text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <Zap className={`w-4 h-4 ${stealthActiveCount > 0 ? "text-indigo-600 animate-pulse" : "text-slate-400"}`} />
+          <span>Stealth {stealthActiveCount > 0 ? `(${stealthActiveCount})` : ""}</span>
+        </button>
       </div>
     </header>
   );

@@ -1019,9 +1019,31 @@ async function auditSinglePage(
     recommendations.push({ priority: "high", title: "Add Meta Description", detail: "No meta description found. Add a 120-160 char description with your primary keyword and a call-to-action." });
   }
 
-  if (h1s.length === 1) checks.push({ id: "h1", label: "Single H1", category: "on-page", status: "pass", detail: `One H1 found`, value: h1s[0] });
-  else if (h1s.length === 0) { checks.push({ id: "h1", label: "Single H1", category: "on-page", status: "fail", detail: "No H1 tag found." }); recommendations.push({ priority: "high", title: "Add H1 Heading", detail: "No H1 tag found. Add exactly one H1 with your primary keyword." }); }
-  else checks.push({ id: "h1", label: "Single H1", category: "on-page", status: "warn", detail: `${h1s.length} H1 tags found. Use only one.`, value: h1s.join("\n") });
+  const rawH1Els = Array.from(doc.querySelectorAll("h1"));
+  const h1Texts = rawH1Els.map((el) => el.textContent?.trim() || "").filter(Boolean);
+  const emptyH1Count = rawH1Els.length - h1Texts.length;
+
+  if (rawH1Els.length === 1 && h1Texts.length === 1) {
+    checks.push({ id: "h1", label: "Single H1 Heading", category: "on-page", status: "pass", detail: "One clear H1 found", value: h1Texts[0] });
+  } else if (rawH1Els.length === 0) {
+    checks.push({ id: "h1", label: "Single H1 Heading", category: "on-page", status: "fail", detail: "No H1 tag found. Every page should have exactly one H1." });
+    recommendations.push({ priority: "high", title: "Add Primary H1 Heading", detail: "No H1 tag found. Add exactly one H1 with your primary keyword." });
+  } else {
+    const isSevere = rawH1Els.length > 2;
+    checks.push({
+      id: "h1",
+      label: "Single H1 Heading",
+      category: "on-page",
+      status: isSevere ? "fail" : "warn",
+      detail: `${rawH1Els.length} H1 tags detected${emptyH1Count > 0 ? ` (${emptyH1Count} empty H1 tags)` : ""}! Google guidelines require a single primary H1 per page to define topical hierarchy.`,
+      value: h1Texts.slice(0, 10).join("\n"),
+    });
+    recommendations.push({
+      priority: "high",
+      title: "Fix Multiple H1 Headings",
+      detail: `${rawH1Els.length} H1 tags found. Demote extra H1s to H2/H3 tags and ensure only one primary H1 represents the core page topic.`,
+    });
+  }
 
   if (h2s.length > 0) checks.push({ id: "headings", label: "H2 Subheadings", category: "on-page", status: "pass", detail: `${h2s.length} H2 tags found.`, value: h2s.join("\n") });
   else { checks.push({ id: "headings", label: "H2 Subheadings", category: "on-page", status: "warn", detail: "No H2 tags." }); recommendations.push({ priority: "medium", title: "Add H2 Subheadings", detail: "No H2 tags found. Break content into sections with H2s containing secondary keywords." }); }
@@ -1044,19 +1066,96 @@ async function auditSinglePage(
   if (hasInfographic) checks.push({ id: "infographic", label: "Infographic Present", category: "on-page", status: "pass", detail: "Infographic or chart image detected." });
   else checks.push({ id: "infographic", label: "Infographic Present", category: "on-page", status: "info", detail: "No infographic detected. Infographics improve engagement and earn backlinks." });
 
+  // Author & Publisher Attribution Check
+  const authorTag = getMeta(doc, 'meta[name="author"]') || getMeta(doc, 'meta[property="article:author"]') || doc.querySelector('link[rel="author"]')?.getAttribute("href");
+  const publisherTag = getMeta(doc, 'meta[name="publisher"]') || getMeta(doc, 'meta[property="article:publisher"]') || doc.querySelector('link[rel="publisher"]')?.getAttribute("href");
+
+  if (authorTag || publisherTag) {
+    const details = [authorTag && `Author: ${authorTag}`, publisherTag && `Publisher: ${publisherTag}`].filter(Boolean).join(" | ");
+    checks.push({
+      id: "author-publisher",
+      label: "Author & Publisher Attribution",
+      category: "on-page",
+      status: "pass",
+      detail: `Attribution declared (${details})`,
+      value: details,
+    });
+  } else {
+    checks.push({
+      id: "author-publisher",
+      label: "Author & Publisher Attribution",
+      category: "on-page",
+      status: "warn",
+      detail: "Author and publisher metadata are missing. Adding author attribution supports Google E-E-A-T search quality guidelines.",
+    });
+    recommendations.push({
+      priority: "low",
+      title: "Add Author / Publisher Attribution",
+      detail: "Author and publisher metadata are missing. Add <meta name='author'> or schema Person/Organization to bolster E-E-A-T authority.",
+    });
+  }
+
+  // Canonical Tag Check (Technical SEO)
   if (canonical) {
-    // Validate canonical URL
     try {
       const canonicalUrl = new URL(canonical, targetUrl);
-      if (canonicalUrl.href === targetUrl || canonicalUrl.origin === parsed.origin) {
-        checks.push({ id: "canonical", label: "Canonical URL", category: "on-page", status: "pass", detail: `Valid canonical URL set`, value: canonical });
+      if (canonicalUrl.protocol === "http:" && parsed.protocol === "https:") {
+        checks.push({
+          id: "canonical",
+          label: "Canonical URL",
+          category: "technical",
+          status: "fail",
+          detail: `Canonical points to insecure HTTP on an HTTPS page: ${canonical}`,
+          value: canonical,
+        });
+        recommendations.push({
+          priority: "high",
+          title: "Fix Insecure Canonical Protocol",
+          detail: `Canonical tag specifies http:// instead of https:// (${canonical}). Update to https://.`,
+        });
+      } else if (canonicalUrl.href === targetUrl || canonicalUrl.origin === parsed.origin) {
+        checks.push({
+          id: "canonical",
+          label: "Canonical URL",
+          category: "technical",
+          status: "pass",
+          detail: `Valid self-referencing canonical URL: ${canonical}`,
+          value: canonical,
+        });
       } else {
-        checks.push({ id: "canonical", label: "Canonical URL", category: "on-page", status: "warn", detail: `Canonical points to different origin: ${canonical}`, value: canonical });
+        checks.push({
+          id: "canonical",
+          label: "Canonical URL",
+          category: "technical",
+          status: "warn",
+          detail: `Canonical points to alternate destination: ${canonical}`,
+          value: canonical,
+        });
       }
     } catch {
-      checks.push({ id: "canonical", label: "Canonical URL", category: "on-page", status: "warn", detail: `Canonical URL is invalid: ${canonical}`, value: canonical });
+      checks.push({
+        id: "canonical",
+        label: "Canonical URL",
+        category: "technical",
+        status: "fail",
+        detail: `Canonical URL syntax is invalid: ${canonical}`,
+        value: canonical,
+      });
     }
-  } else { checks.push({ id: "canonical", label: "Canonical URL", category: "on-page", status: "warn", detail: "No canonical link tag." }); recommendations.push({ priority: "medium", title: "Add Canonical Tag", detail: "No canonical URL found. Add a <link rel='canonical'> tag." }); }
+  } else {
+    checks.push({
+      id: "canonical",
+      label: "Canonical URL",
+      category: "technical",
+      status: "fail",
+      detail: "Canonical URL is missing. Without a canonical tag (<link rel='canonical'>), search engines may fragment authority or index duplicate URL variations.",
+    });
+    recommendations.push({
+      priority: "high",
+      title: "Add Self-Referencing Canonical Tag",
+      detail: "Missing canonical tag. Add <link rel='canonical' href='...'> to explicitly declare the authoritative page URL.",
+    });
+  }
 
   // Hreflang check
   const hreflangLinks = Array.from(doc.querySelectorAll('link[rel="alternate"][hreflang]'));
@@ -1122,6 +1221,44 @@ async function auditSinglePage(
 
   if (robotsContent) checks.push({ id: "robots-txt", label: "robots.txt", category: "technical", status: "pass", detail: "robots.txt file found." });
   else { checks.push({ id: "robots-txt", label: "robots.txt", category: "technical", status: "warn", detail: "No robots.txt found." }); recommendations.push({ priority: "medium", title: "Add robots.txt", detail: "No robots.txt file found." }); }
+
+  // Robots Meta Tag Check (On-Page / Technical directive)
+  const metaRobotsTag = getMeta(doc, 'meta[name="robots"]') || getMeta(doc, 'meta[name="googlebot"]');
+  if (metaRobotsTag) {
+    const isNoindex = metaRobotsTag.toLowerCase().includes("noindex");
+    if (isNoindex) {
+      checks.push({
+        id: "robots-meta",
+        label: "Robots Meta Tag",
+        category: "technical",
+        status: "warn",
+        detail: `Robots meta tag specifies "${metaRobotsTag}". Page is set to NOINDEX.`,
+        value: metaRobotsTag,
+      });
+    } else {
+      checks.push({
+        id: "robots-meta",
+        label: "Robots Meta Tag",
+        category: "technical",
+        status: "pass",
+        detail: `Robots meta tag declared: ${metaRobotsTag}`,
+        value: metaRobotsTag,
+      });
+    }
+  } else {
+    checks.push({
+      id: "robots-meta",
+      label: "Robots Meta Tag",
+      category: "technical",
+      status: "warn",
+      detail: "Robots meta tag is not defined. Recommended to explicitly declare <meta name='robots' content='index, follow'> to guide crawler indexation and snippets.",
+    });
+    recommendations.push({
+      priority: "medium",
+      title: "Add Robots Meta Tag",
+      detail: "Robots meta tag is not defined. Add <meta name='robots' content='index, follow, max-image-preview:large'> in <head>.",
+    });
+  }
 
   if (sitemapContent) checks.push({ id: "sitemap", label: "Sitemap", category: "technical", status: "pass", detail: `Sitemap found at ${sitemapUrl}` });
   else { checks.push({ id: "sitemap", label: "Sitemap", category: "technical", status: "warn", detail: "No sitemap found (checked sitemap.xml and sitemap_index.xml)." }); recommendations.push({ priority: "medium", title: "Add Sitemap", detail: "No sitemap found. Create an XML sitemap." }); }

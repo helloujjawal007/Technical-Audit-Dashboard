@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, ExternalLink, Search, Pause, ListFilter, AlertTriangle, Link2 } from "lucide-react";
+import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, ExternalLink, Search, Pause, ListFilter, AlertTriangle, Link2, Zap } from "lucide-react";
 import type { CrawlPageResult, AuditResult, CheckResult } from "@/types";
 import { scoreColor, CATEGORY_META, STATUS_META } from "@/types";
 import { generateCrawlCsv, downloadCsv, downloadExcel, generateIssueCsv } from "@/lib/csv";
@@ -13,6 +13,8 @@ interface CrawlResultsViewProps {
   crawlProgress: { completed: number; total: number };
   isCrawling: boolean;
   paused?: boolean;
+  totalDiscoveredUrls?: number;
+  onOpenStealthQueue?: () => void;
 }
 
 type ViewMode = "urls" | "issues";
@@ -29,6 +31,8 @@ const ISSUE_GUIDANCE: Record<string, IssueGuidance> = {
   "internal-links": { explanation: "The page has too few useful links connecting visitors and search engines to related pages.", fix: "Add relevant internal links with descriptive anchor text to important related pages." },
   "structured-data": { explanation: "The page is missing structured data that could help search engines understand its content.", fix: "Add valid JSON-LD that matches the visible content, such as Article, Product, FAQ, or Organization data." },
   noindex: { explanation: "A noindex instruction prevents this page from appearing in search results.", fix: "Remove the noindex meta tag or X-Robots-Tag unless keeping the page out of search is intentional." },
+  "robots-meta": { explanation: "The robots meta tag is not defined on the page, leaving indexation and snippet rendering to search engine defaults.", fix: "Add <meta name='robots' content='index, follow, max-image-preview:large'> in the HTML <head> to explicitly guide search crawlers." },
+  "author-publisher": { explanation: "Author or publisher metadata is missing, which weakens Google E-E-A-T (Experience, Expertise, Authoritativeness, Trustworthiness) scoring.", fix: "Add <meta name='author' content='Author Name'> or JSON-LD Person/Organization schema to attribute content to verifiable authors." },
   https: { explanation: "The page is not securely served over HTTPS.", fix: "Install a valid SSL certificate and redirect every HTTP URL to its HTTPS version." },
 };
 
@@ -39,7 +43,16 @@ function guidanceFor(check: CheckResult): IssueGuidance {
   };
 }
 
-export function CrawlResultsView({ pages, baseUrl, sitemapUrl, crawlProgress, isCrawling, paused }: CrawlResultsViewProps) {
+export function CrawlResultsView({
+  pages,
+  baseUrl,
+  sitemapUrl,
+  crawlProgress,
+  isCrawling,
+  paused,
+  totalDiscoveredUrls,
+  onOpenStealthQueue,
+}: CrawlResultsViewProps) {
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "completed" | "failed" | "warnings">("all");
   const [viewMode, setViewMode] = useState<ViewMode>("urls");
@@ -107,6 +120,39 @@ export function CrawlResultsView({ pages, baseUrl, sitemapUrl, crawlProgress, is
 
   return (
     <div className="space-y-4">
+      {/* Big site stealth notification banner */}
+      {Boolean(totalDiscoveredUrls && totalDiscoveredUrls > 100) && (
+        <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white border border-indigo-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md animate-fade-in">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-300 flex-shrink-0">
+              <Zap className="w-5 h-5 text-indigo-300 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs sm:text-sm font-black text-white">
+                  Big Site Detected ({totalDiscoveredUrls} total URLs found)
+                </span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-400/20 text-indigo-200 border border-indigo-400/30">
+                  Stealth Mode Active
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-0.5">
+                Auditing the top 100 priority pages immediately in &lt; 2 minutes. The full site ({totalDiscoveredUrls} pages) is enqueued in Stealth Mode and will continue in the background once foreground audits finish.
+              </p>
+            </div>
+          </div>
+          {onOpenStealthQueue && (
+            <button
+              type="button"
+              onClick={onOpenStealthQueue}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-xs transition cursor-pointer flex-shrink-0"
+            >
+              <span>View Stealth Queue</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Summary header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
         <div>

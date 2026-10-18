@@ -15,6 +15,14 @@ import { NavBar, type NavPage } from "@/components/NavBar";
 import { ModernScanningState } from "@/components/ModernScanningState";
 import { ReadyHeroState } from "@/components/ReadyHeroState";
 import { SiteDashboardView } from "@/components/SiteDashboardView";
+import { StealthQueueModal } from "@/components/StealthQueueModal";
+import {
+  initStealthBackgroundWorker,
+  enqueueStealthSite,
+  setForegroundAuditActive,
+  getStealthJobs,
+  type StealthJob,
+} from "@/lib/stealthQueue";
 import { getCreditUsage, getAllCreditUsage, recordCreditUsage, canStartAudit, getGuestCreditUsage, recordGuestCreditUsage, canStartGuestAudit } from "@/lib/credits";
 import type { AuditResult, AuditRow, AuditMode, AuditDepth, CrawlPageResult, CustomExtractionFields } from "@/types";
 
@@ -75,6 +83,27 @@ function App() {
   const [sharedAudit, setSharedAudit] = useState<{ row: AuditRow; result: AuditResult } | null>(null);
   const [sharedLoading, setSharedLoading] = useState(false);
   const [sharedError, setSharedError] = useState<string | null>(null);
+
+  // Stealth Mode Background Queue state
+  const [stealthQueueOpen, setStealthQueueOpen] = useState(false);
+  const [stealthActiveCount, setStealthActiveCount] = useState(0);
+  const [crawlTotalDiscovered, setCrawlTotalDiscovered] = useState<number | null>(null);
+
+  useEffect(() => {
+    initStealthBackgroundWorker();
+    const updateStealthCount = () => {
+      const jobs = getStealthJobs();
+      const active = jobs.filter(
+        (j) => j.status === "running" || j.status === "queued" || j.status === "waiting"
+      ).length;
+      setStealthActiveCount(active);
+    };
+    updateStealthCount();
+    window.addEventListener("ods_stealth_jobs_updated", updateStealthCount);
+    return () => {
+      window.removeEventListener("ods_stealth_jobs_updated", updateStealthCount);
+    };
+  }, []);
 
   useEffect(() => {
     if (!sharedReportId) return;
@@ -202,17 +231,21 @@ function App() {
     setPaused(false);
     pauseRef.current = false;
     cancelRef.current = false;
+    setForegroundAuditActive(true);
 
-    if (mode === "multiple" || mode === "staging") {
-      setView("crawl");
-      await handleMultipleAudit(input, mode, depth);
-    } else {
-      // Always perform full site audit across all pages
-      setView("crawl");
-      await handleCrawlAudit(normalizeUrl(input), "crawl", depth);
+    try {
+      if (mode === "multiple" || mode === "staging") {
+        setView("crawl");
+        await handleMultipleAudit(input, mode, depth);
+      } else {
+        // Always perform full site audit across all pages
+        setView("crawl");
+        await handleCrawlAudit(normalizeUrl(input), "crawl", depth);
+      }
+    } finally {
+      setLoading(false);
+      setForegroundAuditActive(false);
     }
-
-    setLoading(false);
 
     // Record credit usage
     if (user) {
@@ -227,6 +260,7 @@ function App() {
 
   const auditMultiplePages = async (urls: string[], auditType: AuditMode, depth: AuditDepth) => {
     setIsCrawling(true);
+    setForegroundAuditActive(true);
     setCrawlPages([]);
     setCrawlBaseUrl(urls.length > 0 ? urls[0] : "");
     setCrawlSitemapUrl(null);
@@ -242,7 +276,8 @@ function App() {
 
     let completedCount = 0;
     let nextIndex = 0;
-    const CONCURRENCY = 5;
+    // 8 parallel workers allow up to 100 pages in under 2 minutes
+    const CONCURRENCY = 8;
 
     const checkPaused = async () => {
       while (pauseRef.current && !cancelRef.current) {
@@ -292,11 +327,14 @@ function App() {
       }
     };
 
-    const workers = Array.from({ length: Math.min(CONCURRENCY, urls.length) }, () => worker());
-    await Promise.all(workers);
-
-    setIsCrawling(false);
-    if (user) await fetchAudits();
+    try {
+      const workers = Array.from({ length: Math.min(CONCURRENCY, urls.length) }, () => worker());
+      await Promise.all(workers);
+    } finally {
+      setIsCrawling(false);
+      setForegroundAuditActive(false);
+      if (user) await fetchAudits();
+    }
   };
 
   const handleMultipleAudit = async (rawInput: string, auditType: AuditMode, depth: AuditDepth) => {
@@ -312,11 +350,24 @@ function App() {
       return;
     }
 
-    await auditMultiplePages(uniqueUrls, auditType, depth);
+    setCrawlTotalDiscovered(uniqueUrls.length);
+
+    if (uniqueUrls.length > 100) {
+      enqueueStealthSite({
+        url: uniqueUrls[0],
+        urls: uniqueUrls,
+        depth,
+      });
+      // Audit top 100 priority pages immediately in < 2 minutes
+      await auditMultiplePages(uniqueUrls.slice(0, 100), auditType, depth);
+    } else {
+      await auditMultiplePages(uniqueUrls, auditType, depth);
+    }
   };
 
   const handleCrawlAudit = async (normalizedUrl: string, auditType: AuditMode, depth: AuditDepth) => {
     setIsCrawling(true);
+    setForegroundAuditActive(true);
     setError(null);
     setCrawlPages([]);
     setCrawlBaseUrl(normalizedUrl);
@@ -334,12 +385,69 @@ function App() {
       }
 
       setCrawlSitemapUrl(crawlData.sitemapUrl);
-      await auditMultiplePages(urls, auditType, depth);
+      setCrawlTotalDiscovered(urls.length);
+
+      if (urls.length > 100) {
+        enqueueStealthSite({
+          url: normalizedUrl,
+          urls,
+          depth,
+        });
+        // Interactive audit audits top 100 priority pages in < 2 mins
+        await auditMultiplePages(urls.slice(0, 100), auditType, depth);
+      } else {
+        await auditMultiplePages(urls, auditType, depth);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Crawl failed";
       setError(msg);
       setIsCrawling(false);
+      setForegroundAuditActive(false);
     }
+  };
+
+  const handleOpenStealthReport = (job: StealthJob) => {
+    const mappedPages: CrawlPageResult[] = job.pages.map((p) => ({
+      url: p.url,
+      status:
+        p.status === "completed"
+          ? "completed"
+          : p.status === "failed"
+          ? "failed"
+          : p.status === "running"
+          ? "running"
+          : "pending",
+      result:
+        p.score !== undefined
+          ? ({
+              score: p.score,
+              title: p.title || null,
+              description: null,
+              checks: [],
+              categoryScores: [],
+              robotsContent: null,
+              sitemapContent: null,
+              metaTags: {},
+              openGraph: {},
+              structuredData: [],
+              customData: null,
+              loadTime: 0,
+              pageSize: 0,
+              auditType: job.auditDepth,
+              auditDepth: job.auditDepth,
+              completedAt: job.completedAt || new Date().toISOString(),
+              recommendations: [],
+            } as unknown as AuditResult)
+          : null,
+      error: p.error || null,
+    }));
+
+    setCrawlBaseUrl(job.url);
+    setCrawlPages(mappedPages);
+    setCrawlProgress({ completed: job.completedUrls, total: job.totalUrls });
+    setCrawlTotalDiscovered(job.totalUrls);
+    setView("crawl");
+    setActiveNav("audit");
   };
 
   const handleSelect = async (audit: AuditRow) => {
@@ -511,6 +619,8 @@ function App() {
         activeNav={activeNav}
         onNavChange={setActiveNav}
         onOpenHistory={() => setShowAllHistory(true)}
+        onOpenStealthQueue={() => setStealthQueueOpen(true)}
+        stealthActiveCount={stealthActiveCount}
         onSignOut={signOut}
         onExitGuest={exitGuest}
       />
@@ -696,6 +806,8 @@ function App() {
                   crawlProgress={crawlProgress}
                   isCrawling={isCrawling}
                   paused={paused}
+                  totalDiscoveredUrls={crawlTotalDiscovered || undefined}
+                  onOpenStealthQueue={() => setStealthQueueOpen(true)}
                 />
               ) : result && selected ? (
                 <ResultsView
@@ -726,6 +838,13 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* Stealth Mode Queue Modal */}
+      <StealthQueueModal
+        isOpen={stealthQueueOpen}
+        onClose={() => setStealthQueueOpen(false)}
+        onOpenReport={handleOpenStealthReport}
+      />
 
       {/* All History Modal Fallback */}
       {!isGuest && (
