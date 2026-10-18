@@ -358,10 +358,23 @@ async function resolveAllSitemapUrls(rootXml: string, rootUrl: string): Promise<
   const pageUrls: string[] = [];
   const seen = new Set<string>();
 
+  const normalizeUrlKey = (u: string) => {
+    try {
+      const parsed = new URL(u);
+      if (parsed.pathname.length > 1 && parsed.pathname.endsWith("/")) {
+        parsed.pathname = parsed.pathname.slice(0, -1);
+      }
+      return parsed.href.toLowerCase();
+    } catch {
+      return u.toLowerCase().replace(/\/+$/, "");
+    }
+  };
+
   if (!isSitemapIndex(rootXml)) {
     // It's a urlset - extract page URLs directly
     for (const u of extractSitemapUrls(rootXml)) {
-      if (!seen.has(u)) { seen.add(u); pageUrls.push(u); }
+      const key = normalizeUrlKey(u);
+      if (!seen.has(key)) { seen.add(key); pageUrls.push(u); }
     }
     return { urls: pageUrls, sitemapsChecked };
   }
@@ -383,14 +396,16 @@ async function resolveAllSitemapUrls(rootXml: string, rootUrl: string): Promise<
         const gXml = await fetchSitemapContent(gUrl);
         if (gXml) {
           for (const u of extractSitemapUrls(gXml)) {
-            if (!seen.has(u)) { seen.add(u); pageUrls.push(u); }
+            const key = normalizeUrlKey(u);
+            if (!seen.has(key)) { seen.add(key); pageUrls.push(u); }
           }
         }
       }
     } else {
       // Child is a urlset - extract page URLs
       for (const u of extractSitemapUrls(childXml)) {
-        if (!seen.has(u)) { seen.add(u); pageUrls.push(u); }
+        const key = normalizeUrlKey(u);
+        if (!seen.has(key)) { seen.add(key); pageUrls.push(u); }
       }
     }
   }
@@ -1035,13 +1050,25 @@ async function auditSinglePage(
   } else if (rawH1Els.length === 0) {
     checks.push({ id: "h1", label: "Single H1 Heading", category: "on-page", status: "fail", detail: "No H1 tag found. Every page should have exactly one H1." });
     recommendations.push({ priority: "high", title: "Add Primary H1 Heading", detail: "No H1 tag found. Add exactly one H1 with your primary keyword." });
-  } else {
-    const isSevere = rawH1Els.length > 2;
+  } else if (h1Texts.length === 0 && rawH1Els.length > 0) {
     checks.push({
       id: "h1",
       label: "Single H1 Heading",
       category: "on-page",
-      status: isSevere ? "fail" : "warn",
+      status: "fail",
+      detail: `${rawH1Els.length} empty H1 tag(s) detected with no text content. Every page requires a single visible, keyword-rich H1 heading.`,
+    });
+    recommendations.push({
+      priority: "high",
+      title: "Populate Empty H1 Tag",
+      detail: "Empty H1 tag detected. Add descriptive text to your primary H1 heading reflecting the page topic.",
+    });
+  } else {
+    checks.push({
+      id: "h1",
+      label: "Single H1 Heading",
+      category: "on-page",
+      status: "fail",
       detail: `${rawH1Els.length} H1 tags detected${emptyH1Count > 0 ? ` (${emptyH1Count} empty H1 tags)` : ""}! Google guidelines require a single primary H1 per page to define topical hierarchy.`,
       value: h1Texts.slice(0, 10).join("\n"),
     });

@@ -30,7 +30,11 @@ function normalizeUrl(raw: string): string {
   let u = raw.trim();
   if (!u) return u;
   if (!/^https?:\/\//i.test(u)) u = "https://" + u;
-  return u;
+  try {
+    return new URL(u).href;
+  } catch {
+    return u;
+  }
 }
 
 function App() {

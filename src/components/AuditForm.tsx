@@ -16,6 +16,7 @@ import {
   X,
   Play,
   Pause,
+  AlertCircle,
 } from "lucide-react";
 import type { AuditMode, SiteType, AuditDepth, CustomExtractionFields } from "@/types";
 import { DEFAULT_EXTRACTION_FIELDS, EXTRACTION_FIELD_LABELS } from "@/types";
@@ -69,6 +70,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
   const [mode, setMode] = useState<AuditMode>("crawl");
   const [depth, setDepth] = useState<AuditDepth>("standard");
   const [extractionFields, setExtractionFields] = useState<CustomExtractionFields>(DEFAULT_EXTRACTION_FIELDS);
+  const [inputError, setInputError] = useState<string | null>(null);
 
   const isStaging = siteType === "staging";
   const effectiveMode: AuditMode = isStaging ? "staging" : mode;
@@ -83,8 +85,50 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
+    setInputError(null);
+
     const input = needsTextarea ? multiUrls.trim() : url.trim();
-    if (!input) return;
+    if (!input) {
+      setInputError("Please enter a website URL or domain.");
+      return;
+    }
+
+    if (!needsTextarea) {
+      let testUrl = input;
+      if (/\s/.test(testUrl)) {
+        setInputError("Domain or URL cannot contain spaces.");
+        return;
+      }
+      if (!/^https?:\/\//i.test(testUrl)) {
+        if (/^[a-z0-9]+:\/\//i.test(testUrl)) {
+          setInputError("Invalid protocol. Only http:// and https:// URLs are supported.");
+          return;
+        }
+        testUrl = "https://" + testUrl;
+      }
+      try {
+        const parsed = new URL(testUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          setInputError("Invalid protocol. Only http:// and https:// URLs are supported.");
+          return;
+        }
+        const hostname = parsed.hostname;
+        if (!hostname || (!hostname.includes(".") && hostname !== "localhost") || hostname.startsWith(".") || hostname.endsWith(".")) {
+          setInputError("Please enter a valid domain (e.g., example.com).");
+          return;
+        }
+      } catch {
+        setInputError("Please enter a valid website domain or URL.");
+        return;
+      }
+    } else {
+      const urls = input.split(/[\n,]/).map((u) => u.trim()).filter(Boolean);
+      if (urls.length === 0) {
+        setInputError("Please enter at least one URL.");
+        return;
+      }
+    }
+
     onAudit(input, effectiveMode, depth, effectiveMode === "custom" ? extractionFields : undefined);
   };
 
@@ -342,7 +386,10 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
         {needsTextarea ? (
           <textarea
             value={multiUrls}
-            onChange={(e) => setMultiUrls(e.target.value)}
+            onChange={(e) => {
+              if (inputError) setInputError(null);
+              setMultiUrls(e.target.value);
+            }}
             placeholder={
               isStaging
                 ? "https://staging.example.com\nhttps://staging.example.com/about"
@@ -362,6 +409,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
               type="text"
               value={url.replace(/^https?:\/\//i, "")}
               onChange={(e) => {
+                if (inputError) setInputError(null);
                 const val = e.target.value.trim();
                 setUrl(val ? `https://${val.replace(/^https?:\/\//i, "")}` : "");
               }}
@@ -372,12 +420,22 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
             {url && !loading && (
               <button
                 type="button"
-                onClick={() => setUrl("")}
+                onClick={() => {
+                  setUrl("");
+                  setInputError(null);
+                }}
                 className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 rounded-lg"
               >
                 <X className="w-4 h-4" />
               </button>
             )}
+          </div>
+        )}
+
+        {inputError && (
+          <div className="flex items-center gap-2 mt-2.5 px-3 py-2 rounded-xl bg-rose-50 border border-rose-200/80 text-rose-700 text-xs font-semibold animate-fade-in">
+            <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-500" />
+            <span>{inputError}</span>
           </div>
         )}
       </div>
