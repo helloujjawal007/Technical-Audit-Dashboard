@@ -160,9 +160,14 @@ function getMeta(doc: Document, selector: string, attr = "content"): string | nu
 }
 
 function stripHtml(html: string): { doc: Document; text: string } {
-  const { document: doc } = parseHTML(html);
-  doc.querySelectorAll("script, style, noscript, template").forEach((n) => n.remove());
-  const text = doc.body?.textContent?.replace(/\s+/g, " ").trim() || "";
+  const safeHtml = html && typeof html === "string" && html.trim().length > 0
+    ? html
+    : "<!DOCTYPE html><html><head></head><body></body></html>";
+  const { document: doc } = parseHTML(safeHtml);
+  if (doc) {
+    doc.querySelectorAll("script, style, noscript, template").forEach((n) => n.remove());
+  }
+  const text = doc?.body?.textContent?.replace(/\s+/g, " ").trim() || "";
   return { doc: doc as unknown as Document, text };
 }
 
@@ -309,12 +314,34 @@ function removeHeaderFooterLinks(doc: Document): void {
   doc.querySelectorAll("header, footer, nav, [role='navigation'], [role='banner'], [role='contentinfo']").forEach((el) => el.remove());
 }
 
-// Fetch with sitemap fallback: try sitemap.xml, then sitemap_index.xml
+// In-memory cache for domain-level metadata (robots.txt, sitemaps)
+// Prevents redundant network fetches across multi-page crawls and repeat audits.
+interface OriginMetadata {
+  robotsContent: string | null;
+  sitemapContent: string | null;
+  sitemapUrl: string | null;
+  timestamp: number;
+}
+const ORIGIN_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const originMetadataCache = new Map<string, OriginMetadata>();
+
+// Short-lived audit result cache for single-page lookups
+const pageAuditCache = new Map<string, { result: AuditResult; timestamp: number }>();
+const AUDIT_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
+
+// Fetch with sitemap fallback: try sitemap.xml, then sitemap_index.xml with compression & keep-alive
 async function fetchSitemap(origin: string): Promise<{ content: string | null; url: string | null }> {
   const candidates = ["/sitemap.xml", "/sitemap_index.xml"];
   for (const path of candidates) {
     try {
-      const res = await fetch(origin + path, { headers: { "User-Agent": "SEO-Audit-Bot/1.0" } });
+      const res = await fetch(origin + path, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; ODS-AuditBot/2.0; +https://onlinedigitalsolution.com)",
+          "Accept": "application/xml,text/xml,*/*",
+          "Accept-Encoding": "gzip, deflate, br",
+          "Connection": "keep-alive",
+        },
+      });
       if (res.ok) {
         const text = await res.text();
         if (text.trim()) return { content: text, url: origin + path };
@@ -322,6 +349,79 @@ async function fetchSitemap(origin: string): Promise<{ content: string | null; u
     } catch { /* try next */ }
   }
   return { content: null, url: null };
+}
+
+const pendingOriginPromises = new Map<string, Promise<{
+  robotsContent: string | null;
+  sitemapContent: string | null;
+  sitemapUrl: string | null;
+}>>();
+
+async function getOriginMetadata(origin: string): Promise<{
+  robotsContent: string | null;
+  sitemapContent: string | null;
+  sitemapUrl: string | null;
+}> {
+  const now = Date.now();
+  const cached = originMetadataCache.get(origin);
+  if (cached && now - cached.timestamp < ORIGIN_CACHE_TTL_MS) {
+    return {
+      robotsContent: cached.robotsContent,
+      sitemapContent: cached.sitemapContent,
+      sitemapUrl: cached.sitemapUrl,
+    };
+  }
+
+  const existingPromise = pendingOriginPromises.get(origin);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      // Fetch robots.txt and sitemap in parallel with keep-alive
+      const [robotsRes, sitemapData] = await Promise.all([
+        fetch(origin + "/robots.txt", {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (compatible; ODS-AuditBot/2.0; +https://onlinedigitalsolution.com)",
+            "Accept": "text/plain,*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+          },
+        }).catch(() => null),
+        fetchSitemap(origin),
+      ]);
+
+      let robotsContent: string | null = null;
+      if (robotsRes && robotsRes.ok) {
+        robotsContent = await robotsRes.text().catch(() => null);
+      }
+
+      const entry: OriginMetadata = {
+        robotsContent,
+        sitemapContent: sitemapData.content,
+        sitemapUrl: sitemapData.url,
+        timestamp: Date.now(),
+      };
+
+      originMetadataCache.set(origin, entry);
+      if (originMetadataCache.size > 200) {
+        const oldestKey = originMetadataCache.keys().next().value;
+        if (oldestKey) originMetadataCache.delete(oldestKey);
+      }
+
+      return {
+        robotsContent: entry.robotsContent,
+        sitemapContent: entry.sitemapContent,
+        sitemapUrl: entry.sitemapUrl,
+      };
+    } finally {
+      pendingOriginPromises.delete(origin);
+    }
+  })();
+
+  pendingOriginPromises.set(origin, fetchPromise);
+  return fetchPromise;
 }
 
 // Check if the XML is a sitemap index (links to other sitemaps) vs a urlset (actual page URLs)
@@ -522,11 +622,48 @@ async function checkLinkStatus(href: string, text: string): Promise<InternalLink
 
 async function checkInternalLinkStatuses(internalLinks: { href: string; text: string }[], maxLinks: number): Promise<InternalLinkStatus[]> {
   const uniqueLinks = [...new Map(internalLinks.map((l) => [l.href, l])).values()].slice(0, maxLinks);
+  const CONCURRENCY = 10;
   const results: InternalLinkStatus[] = [];
-  for (const link of uniqueLinks) {
-    results.push(await checkLinkStatus(link.href, link.text));
+  for (let i = 0; i < uniqueLinks.length; i += CONCURRENCY) {
+    const chunk = uniqueLinks.slice(i, i + CONCURRENCY);
+    const chunkResults = await Promise.all(chunk.map((link) => checkLinkStatus(link.href, link.text)));
+    results.push(...chunkResults);
   }
   return results;
+}
+
+function countSyllables(word: string): number {
+  word = word.toLowerCase().replace(/[^a-z]/g, "");
+  if (word.length <= 3) return 1;
+  word = word.replace(/(?:[^laeiouy]|ed|es|e)$/, "");
+  word = word.replace(/^y/, "");
+  const matches = word.match(/[aeiouy]{1,2}/g);
+  return matches ? matches.length : 1;
+}
+
+function calculateReadability(text: string): { score: number; readingTimeMinutes: number; grade: string } {
+  const wordsList = text.trim().split(/\s+/).filter(Boolean);
+  const wordCount = wordsList.length;
+  if (wordCount < 10) return { score: 100, readingTimeMinutes: 1, grade: "Easy" };
+
+  const sentences = Math.max(1, (text.match(/[.!?]+/g) || []).length);
+  const totalSyllables = wordsList.reduce((sum, w) => sum + countSyllables(w), 0);
+
+  // Flesch Reading Ease score
+  const flesch = 206.835 - 1.015 * (wordCount / sentences) - 84.6 * (totalSyllables / wordCount);
+  const score = Math.max(0, Math.min(100, Math.round(flesch)));
+
+  let grade = "Standard (Plain English)";
+  if (score >= 90) grade = "Very Easy (5th Grade)";
+  else if (score >= 80) grade = "Easy (6th Grade)";
+  else if (score >= 70) grade = "Fairly Easy (7th Grade)";
+  else if (score >= 60) grade = "Standard (8th-9th Grade)";
+  else if (score >= 50) grade = "Fairly Difficult (High School)";
+  else if (score >= 30) grade = "Difficult (College)";
+  else grade = "Very Difficult (Graduate)";
+
+  const readingTimeMinutes = Math.max(1, Math.ceil(wordCount / 200));
+  return { score, readingTimeMinutes, grade };
 }
 
 // ===== Schema validation (basic structural validation) =====
@@ -881,6 +1018,8 @@ async function auditSinglePage(
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (compatible; ODS-AuditBot/2.0)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
       },
       redirect: "follow",
     });
@@ -1100,12 +1239,17 @@ async function auditSinglePage(
   if (hasInfographic) checks.push({ id: "infographic", label: "Infographic Present", category: "on-page", status: "pass", detail: "Infographic or chart image detected." });
   else checks.push({ id: "infographic", label: "Infographic Present", category: "on-page", status: "info", detail: "No infographic detected. Infographics improve engagement and earn backlinks." });
 
-  // Author & Publisher Attribution Check
+  // Author & Publisher Attribution Check (E-E-A-T)
   const authorTag = getMeta(doc, 'meta[name="author"]') || getMeta(doc, 'meta[property="article:author"]') || doc.querySelector('link[rel="author"]')?.getAttribute("href");
   const publisherTag = getMeta(doc, 'meta[name="publisher"]') || getMeta(doc, 'meta[property="article:publisher"]') || doc.querySelector('link[rel="publisher"]')?.getAttribute("href");
+  const schemaAttribution = schemaTypes.find((s) => /Person|Organization|Author/i.test(s.type));
 
-  if (authorTag || publisherTag) {
-    const details = [authorTag && `Author: ${authorTag}`, publisherTag && `Publisher: ${publisherTag}`].filter(Boolean).join(" | ");
+  if (authorTag || publisherTag || schemaAttribution) {
+    const details = [
+      authorTag && `Author: ${authorTag}`,
+      publisherTag && `Publisher: ${publisherTag}`,
+      schemaAttribution && `Schema: ${schemaAttribution.type}`,
+    ].filter(Boolean).join(" | ");
     checks.push({
       id: "author-publisher",
       label: "Author & Publisher Attribution",
@@ -1711,13 +1855,149 @@ async function auditSinglePage(
   // ===== NEW: Google property detection =====
   const googleProps = detectGoogleProperties(pageHtml);
 
-  // ===== NEW: Internal link status checking (staging mode only, cached) =====
+  // ===== NEW: Internal link status checking (broken link detection) =====
   let internalLinkStatuses: InternalLinkStatus[] = [];
-  if (staging && internalLinks.length > 0) {
+  if (auditDepth !== "basic" && internalLinks.length > 0) {
     internalLinkStatuses = await checkInternalLinkStatuses(
       internalLinks.map((l) => ({ href: l.href, text: l.text })),
       30,
     );
+    const brokenLinks = internalLinkStatuses.filter((l) => l.status !== null && l.status >= 400);
+
+    if (brokenLinks.length > 0) {
+      checks.push({
+        id: "broken-links",
+        label: "Broken Internal Links",
+        category: "technical",
+        status: "fail",
+        detail: `${brokenLinks.length} broken internal link(s) (HTTP 4xx/5xx). Broken links harm crawl budget and user experience.`,
+        value: brokenLinks.map((b) => `${b.status || "ERR"} ${b.href}`).join("\n"),
+      });
+      recommendations.push({
+        priority: "high",
+        title: "Fix Broken Internal Links",
+        detail: `${brokenLinks.length} broken link(s) found on this page. Repair or redirect broken URLs to avoid 404/500 errors.`,
+      });
+    } else {
+      checks.push({
+        id: "broken-links",
+        label: "Broken Internal Links",
+        category: "technical",
+        status: "pass",
+        detail: `Verified ${internalLinkStatuses.length} internal links with no broken 404/500 responses.`,
+      });
+    }
+  } else if (auditDepth !== "basic") {
+    checks.push({
+      id: "broken-links",
+      label: "Broken Internal Links",
+      category: "technical",
+      status: "pass",
+      detail: "No internal links found on this page.",
+    });
+  }
+
+  // ===== Readability & Content Depth Analysis =====
+  const readability = calculateReadability(text);
+  if (readability.score >= 50) {
+    checks.push({
+      id: "readability",
+      label: "Content Readability",
+      category: "on-page",
+      status: "pass",
+      detail: `Flesch Reading Ease: ${readability.score}/100 (${readability.grade}). Est. reading time: ~${readability.readingTimeMinutes} min.`,
+    });
+  } else {
+    checks.push({
+      id: "readability",
+      label: "Content Readability",
+      category: "on-page",
+      status: "warn",
+      detail: `Flesch Reading Ease: ${readability.score}/100 (${readability.grade}). Content may be difficult for general visitors to scan.`,
+    });
+    recommendations.push({
+      priority: "medium",
+      title: "Improve Content Readability",
+      detail: `Readability score is ${readability.score}/100 (${readability.grade}). Break long paragraphs and use simpler vocabulary.`,
+    });
+  }
+
+  // ===== Mixed Content Detection (Insecure Assets on HTTPS) =====
+  if (parsed.protocol === "https:") {
+    const insecureImgs = imgs.filter((i) => i.src.startsWith("http://"));
+    const insecureScripts = Array.from(doc.querySelectorAll('script[src^="http://"]')).map((s) => s.getAttribute("src") || "");
+    const insecureStyles = Array.from(doc.querySelectorAll('link[rel="stylesheet"][href^="http://"]')).map((l) => l.getAttribute("href") || "");
+    const insecureTotal = insecureImgs.length + insecureScripts.length + insecureStyles.length;
+
+    if (insecureTotal > 0) {
+      checks.push({
+        id: "bp-mixed-content",
+        label: "Mixed Content (Insecure Assets)",
+        category: "best-practices",
+        status: "fail",
+        detail: `${insecureTotal} insecure HTTP asset(s) loaded on an HTTPS page. Modern browsers block active mixed content.`,
+        value: [...insecureImgs.map((i) => i.src), ...insecureScripts, ...insecureStyles].slice(0, 5).join("\n"),
+      });
+      recommendations.push({
+        priority: "high",
+        title: "Eliminate Insecure Mixed Content",
+        detail: `${insecureTotal} assets are requested over insecure http://. Update all asset URLs to https://.`,
+      });
+    } else {
+      checks.push({
+        id: "bp-mixed-content",
+        label: "Mixed Content (Insecure Assets)",
+        category: "best-practices",
+        status: "pass",
+        detail: "No insecure HTTP assets loaded on this HTTPS page.",
+      });
+    }
+  }
+
+  // ===== Render-Blocking Scripts in Head =====
+  const renderBlockingScripts = Array.from(doc.querySelectorAll('head > script[src]:not([defer]):not([async]):not([type="module"])')).map((s) => s.getAttribute("src") || "");
+  if (renderBlockingScripts.length > 0) {
+    checks.push({
+      id: "perf-render-blocking",
+      label: "Render-Blocking Scripts",
+      category: "performance",
+      status: "warn",
+      detail: `${renderBlockingScripts.length} render-blocking script(s) in <head> without defer or async attributes.`,
+      value: renderBlockingScripts.slice(0, 5).join("\n"),
+    });
+    recommendations.push({
+      priority: "medium",
+      title: "Defer Render-Blocking JavaScript",
+      detail: `${renderBlockingScripts.length} script(s) block parsing. Add 'defer' or 'async' to improve LCP/FCP.`,
+    });
+  } else {
+    checks.push({
+      id: "perf-render-blocking",
+      label: "Render-Blocking Scripts",
+      category: "performance",
+      status: "pass",
+      detail: "No render-blocking scripts detected in HTML <head>.",
+    });
+  }
+
+  // ===== DOM Tree Depth & Node Count =====
+  const totalDomNodes = doc.querySelectorAll("*").length;
+  if (totalDomNodes > 1500) {
+    checks.push({
+      id: "perf-dom-size",
+      label: "DOM Size & Node Depth",
+      category: "performance",
+      status: "warn",
+      detail: `Excessive DOM size: ${totalDomNodes} elements (Google recommends < 1,500).`,
+    });
+  } else {
+    checks.push({
+      id: "perf-dom-size",
+      label: "DOM Size & Node Depth",
+      category: "performance",
+      status: "pass",
+      detail: `Optimal DOM tree size (${totalDomNodes} elements, well within the 1,500 threshold).`,
+    });
   }
 
   // ===== NEW: Schema validation =====
@@ -1787,10 +2067,53 @@ async function auditSinglePage(
   const metaDescriptions = Array.from(doc.querySelectorAll('meta[name="description"]'));
   if (metaDescriptions.length > 1) {
     duplicateContentIssues.push(`${metaDescriptions.length} meta description tags found - only one is valid.`);
+    checks.push({
+      id: "duplicate-meta-description",
+      label: "Duplicate Meta Descriptions",
+      category: "on-page",
+      status: "warn",
+      detail: `${metaDescriptions.length} meta description tags detected on this page. Search engines only use one.`,
+      value: metaDescriptions.map((m) => m.getAttribute("content") || "").join("\n"),
+    });
+    recommendations.push({
+      priority: "medium",
+      title: "Remove Duplicate Meta Descriptions",
+      detail: `${metaDescriptions.length} meta descriptions found. Keep only one unique meta description.`,
+    });
+  } else {
+    checks.push({
+      id: "duplicate-meta-description",
+      label: "Duplicate Meta Descriptions",
+      category: "on-page",
+      status: "pass",
+      detail: "No duplicate meta description tags detected on this page.",
+    });
   }
+
   const canonicalLinks = Array.from(doc.querySelectorAll('link[rel="canonical"]'));
   if (canonicalLinks.length > 1) {
     duplicateContentIssues.push(`${canonicalLinks.length} canonical tags found - only one is valid.`);
+    checks.push({
+      id: "duplicate-canonical",
+      label: "Multiple Canonical Tags",
+      category: "technical",
+      status: "fail",
+      detail: `${canonicalLinks.length} canonical tags found on this page. Multiple canonical tags cause search engines to ignore all canonical declarations.`,
+      value: canonicalLinks.map((l) => l.getAttribute("href") || "").join("\n"),
+    });
+    recommendations.push({
+      priority: "high",
+      title: "Remove Duplicate Canonical Tags",
+      detail: `${canonicalLinks.length} canonical tags detected. Ensure only one canonical tag is defined.`,
+    });
+  } else {
+    checks.push({
+      id: "duplicate-canonical",
+      label: "Multiple Canonical Tags",
+      category: "technical",
+      status: "pass",
+      detail: "No duplicate canonical tags detected on this page.",
+    });
   }
 
   // 7. Duplicate H1 tags (same text appearing on multiple H1s)
@@ -1802,6 +2125,35 @@ async function auditSinglePage(
   const dupH1s = [...h1Counts.entries()].filter(([, c]) => c > 1);
   if (dupH1s.length > 0) {
     duplicateContentIssues.push(`Duplicate H1 tags: ${dupH1s.map(([t, c]) => `"${t.slice(0, 50)}" (${c}x)`).join(", ")}.`);
+  }
+
+  // Differentiate H1 vs Title
+  const isTitleH1Dup = Boolean(title && h1s.length > 0 && title.toLowerCase().trim() === h1s[0].toLowerCase().trim());
+  if (dupH1s.length > 0 || isTitleH1Dup) {
+    const issuesList = [
+      dupH1s.length > 0 && `Identical H1 text repeated ${dupH1s.map(([t, c]) => `"${t.slice(0, 40)}" (${c}x)`).join(", ")}`,
+      isTitleH1Dup && "Title tag and primary H1 are 100% identical",
+    ].filter(Boolean).join(". ");
+    checks.push({
+      id: "duplicate-h1",
+      label: "Duplicate H1 Headings",
+      category: "on-page",
+      status: "warn",
+      detail: `${issuesList}. Differentiate H1 and Title to target broader keyword variants.`,
+    });
+    recommendations.push({
+      priority: "medium",
+      title: "Differentiate Duplicate H1 / Title",
+      detail: `${issuesList}. Provide unique keyword phrasing for your H1 heading and title tag.`,
+    });
+  } else {
+    checks.push({
+      id: "duplicate-h1",
+      label: "Duplicate H1 Headings",
+      category: "on-page",
+      status: "pass",
+      detail: "H1 heading is unique and properly differentiated from page title.",
+    });
   }
 
   // 8. Duplicate H2 tags (same text appearing on multiple H2s)
@@ -1819,6 +2171,27 @@ async function auditSinglePage(
   const titleTags = Array.from(doc.querySelectorAll("title"));
   if (titleTags.length > 1) {
     duplicateContentIssues.push(`${titleTags.length} <title> tags found - only one is valid.`);
+    checks.push({
+      id: "duplicate-title",
+      label: "Duplicate Title Tags",
+      category: "on-page",
+      status: "fail",
+      detail: `${titleTags.length} <title> tags detected on this page. Search engines require exactly one unique title tag.`,
+      value: titleTags.map((t) => t.textContent?.trim() || "").join("\n"),
+    });
+    recommendations.push({
+      priority: "high",
+      title: "Remove Duplicate Title Tags",
+      detail: `${titleTags.length} <title> tags found. Remove extra title tags so only one primary title defines this page.`,
+    });
+  } else {
+    checks.push({
+      id: "duplicate-title",
+      label: "Duplicate Title Tags",
+      category: "on-page",
+      status: "pass",
+      detail: "Single unique <title> tag declared on this page.",
+    });
   }
 
   // 10. Duplicate meta descriptions (same content)
@@ -1844,6 +2217,7 @@ async function auditSinglePage(
     "title", "meta-description", "h1", "headings", "content-length", "img-alt",
     "canonical", "internal-links", "https", "status", "viewport",
     "robots-txt", "sitemap", "structured-data", "html-lang", "noindex",
+    "robots-meta", "duplicate-title", "duplicate-meta-description", "duplicate-canonical", "duplicate-h1",
   ]);
 
   const STANDARD_CHECK_IDS = new Set([
@@ -1852,6 +2226,9 @@ async function auditSinglePage(
     "external-links", "dofollow-links", "nofollow-links", "anchor-text",
     "charset", "sitemap-in-robots", "security-headers", "compression",
     "favicon", "response-time", "html-size", "duplicate-content",
+    "author-publisher", "broken-links", "perf-cls", "perf-img-dims",
+    "perf-render-blocking", "perf-dom-size", "bp-hsts", "bp-csp",
+    "bp-mixed-content", "readability",
   ]);
 
   let filteredChecks = checks;
@@ -1886,6 +2263,7 @@ async function auditSinglePage(
   });
 
   return {
+    url: targetUrl,
     score, title, description, checks: filteredChecks, categoryScores, robotsContent, sitemapContent, sitemapUrl,
     headers: pageHeaders,
     socialPreview: { ogTitle, ogDescription, ogImage, twitterCard, twitterTitle, twitterDescription, twitterImage },
@@ -1908,10 +2286,144 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const rawUrl: string = body.url || "";
+    const rawUrls: string[] = Array.isArray(body.urls)
+      ? (body.urls as unknown[]).map(String).filter((u) => u.trim().length > 0)
+      : (typeof body.url === "string" && body.url.trim().length > 0 ? [body.url.trim()] : []);
+
+    if (rawUrls.length === 0) {
+      return new Response(JSON.stringify({ error: "URL or array of URLs is required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const mode: string = body.mode || (rawUrls.length > 1 ? "multiple" : "single");
+    const auditDepth: string = body.auditDepth || "deep";
+
+    // Multi-URL batch handling with concurrent worker pool (concurrency: 12)
+    if (rawUrls.length > 1 || (Array.isArray(body.urls) && mode === "multiple")) {
+      const BATCH_CONCURRENCY = 12;
+      const results: AuditResult[] = [];
+      let nextIdx = 0;
+
+      const worker = async () => {
+        while (nextIdx < rawUrls.length) {
+          const i = nextIdx++;
+          const target = rawUrls[i];
+          try {
+            const pageNorm = normalizeUrl(target);
+            const pageParsed = new URL(pageNorm);
+            const { robotsContent, sitemapContent, sitemapUrl } = await getOriginMetadata(pageParsed.origin);
+            const singleRes = await auditSinglePage(pageNorm, robotsContent, sitemapContent, sitemapUrl, false, auditDepth);
+            results.push(singleRes);
+          } catch (err) {
+            console.warn(`Batch worker failed for ${target}:`, err);
+          }
+        }
+      };
+
+      const workers = Array.from({ length: Math.min(BATCH_CONCURRENCY, rawUrls.length) }, () => worker());
+      await Promise.all(workers);
+
+      // Cross-page duplicate & missing analysis
+      const titleMap = new Map<string, string[]>();
+      const descMap = new Map<string, string[]>();
+      const h1Map = new Map<string, string[]>();
+
+      for (const r of results) {
+        const pageUrl = r.url || "";
+        if (r.title && r.title.trim()) {
+          const key = r.title.trim().toLowerCase();
+          if (!titleMap.has(key)) titleMap.set(key, []);
+          titleMap.get(key)!.push(pageUrl);
+        }
+        if (r.description && r.description.trim()) {
+          const key = r.description.trim().toLowerCase();
+          if (!descMap.has(key)) descMap.set(key, []);
+          descMap.get(key)!.push(pageUrl);
+        }
+        const firstH1 = r.headings?.find((h) => h.level === 1)?.text?.trim();
+        if (firstH1) {
+          const key = firstH1.toLowerCase();
+          if (!h1Map.has(key)) h1Map.set(key, []);
+          h1Map.get(key)!.push(pageUrl);
+        }
+      }
+
+      // Flag cross-page duplicates on individual page results
+      for (const r of results) {
+        const pageUrl = r.url || "";
+        if (r.title && r.title.trim()) {
+          const matched = titleMap.get(r.title.trim().toLowerCase()) || [];
+          if (matched.length > 1) {
+            const checkIdx = r.checks.findIndex((c) => c.id === "duplicate-title");
+            const otherUrls = matched.filter((u) => u !== pageUrl);
+            const dupCheck: CheckResult = {
+              id: "duplicate-title",
+              label: "Duplicate Title Tags",
+              category: "on-page",
+              status: "fail",
+              detail: `Title "${r.title}" is duplicated on ${matched.length} pages (${otherUrls.slice(0, 3).join(", ")}).`,
+              value: matched.join("\n"),
+            };
+            if (checkIdx >= 0) r.checks[checkIdx] = dupCheck;
+            else r.checks.push(dupCheck);
+          }
+        }
+        if (r.description && r.description.trim()) {
+          const matched = descMap.get(r.description.trim().toLowerCase()) || [];
+          if (matched.length > 1) {
+            const checkIdx = r.checks.findIndex((c) => c.id === "duplicate-meta-description");
+            const dupCheck: CheckResult = {
+              id: "duplicate-meta-description",
+              label: "Duplicate Meta Descriptions",
+              category: "on-page",
+              status: "warn",
+              detail: `Meta description is duplicated across ${matched.length} pages on this site.`,
+              value: matched.join("\n"),
+            };
+            if (checkIdx >= 0) r.checks[checkIdx] = dupCheck;
+            else r.checks.push(dupCheck);
+          }
+        }
+        const firstH1 = r.headings?.find((h) => h.level === 1)?.text?.trim();
+        if (firstH1) {
+          const matched = h1Map.get(firstH1.toLowerCase()) || [];
+          if (matched.length > 1) {
+            const checkIdx = r.checks.findIndex((c) => c.id === "duplicate-h1");
+            const dupCheck: CheckResult = {
+              id: "duplicate-h1",
+              label: "Duplicate H1 Headings",
+              category: "on-page",
+              status: "warn",
+              detail: `H1 heading "${firstH1}" is duplicated across ${matched.length} pages on this site.`,
+              value: matched.join("\n"),
+            };
+            if (checkIdx >= 0) r.checks[checkIdx] = dupCheck;
+            else r.checks.push(dupCheck);
+          }
+        }
+      }
+
+      const validScores = results.map((r) => r.score).filter((s) => typeof s === "number");
+      const avgScore = validScores.length > 0 ? Math.round(validScores.reduce((a, b) => a + b, 0) / validScores.length) : 0;
+
+      return new Response(JSON.stringify({
+        batch: true,
+        total: rawUrls.length,
+        completed: results.length,
+        averageScore: avgScore,
+        duplicatesSummary: {
+          duplicateTitles: [...titleMap.entries()].filter(([, u]) => u.length > 1).map(([title, urls]) => ({ title, count: urls.length, urls })),
+          duplicateDescriptions: [...descMap.entries()].filter(([, u]) => u.length > 1).map(([description, urls]) => ({ description, count: urls.length, urls })),
+          duplicateH1s: [...h1Map.entries()].filter(([, u]) => u.length > 1).map(([h1, urls]) => ({ h1, count: urls.length, urls })),
+        },
+        results,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    const rawUrl: string = rawUrls[0];
     const auditId: string | undefined = body.auditId;
-    const mode: string = body.mode || "single"; // "single" | "crawl" | "staging"
-    const auditDepth: string = body.auditDepth || "deep"; // "deep" | "standard" | "basic"
     const extractionFields: Record<string, boolean> | undefined = body.extractionFields;
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -1921,6 +2433,18 @@ Deno.serve(async (req: Request) => {
     const parsed = new URL(targetUrl);
     const origin = parsed.origin;
 
+    // 1. Fast cache check for single-page audits
+    const cacheKey = `${targetUrl}|${auditDepth}|${mode}`;
+    const now = Date.now();
+    if (mode === "single" && !body.bypassCache) {
+      const cached = pageAuditCache.get(cacheKey);
+      if (cached && now - cached.timestamp < AUDIT_CACHE_TTL_MS) {
+        return new Response(JSON.stringify({ ...cached.result, fromCache: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     if (auditId && supabase) {
       try {
         await supabase.from("seo_audits").update({ status: "running", updated_at: new Date().toISOString() }).eq("id", auditId);
@@ -1929,15 +2453,8 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Fetch robots.txt
-    let robotsContent: string | null = null;
-    try {
-      const robotsRes = await fetch(origin + "/robots.txt", { headers: { "User-Agent": "SEO-Audit-Bot/1.0" } });
-      if (robotsRes.ok) robotsContent = await robotsRes.text();
-    } catch { /* ignore */ }
-
-    // Fetch sitemap with fallback
-    const { content: sitemapContent, url: sitemapUrl } = await fetchSitemap(origin);
+    // 2. High-speed origin metadata lookup (robots.txt & sitemaps cached in-memory)
+    const { robotsContent, sitemapContent, sitemapUrl } = await getOriginMetadata(origin);
 
     // ===== CRAWL MODE: return list of URLs from sitemap or internal crawl =====
     if (mode === "crawl") {
@@ -2044,6 +2561,14 @@ Deno.serve(async (req: Request) => {
           }
         } catch (dbErr) {
           console.warn("Could not auto-insert audit to database:", dbErr);
+        }
+      }
+
+      if (mode === "single") {
+        pageAuditCache.set(cacheKey, { result, timestamp: Date.now() });
+        if (pageAuditCache.size > 200) {
+          const oldestKey = pageAuditCache.keys().next().value;
+          if (oldestKey) pageAuditCache.delete(oldestKey);
         }
       }
 

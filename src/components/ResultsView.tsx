@@ -1,21 +1,40 @@
-import { useState } from "react";
-import { BarChart3, ListChecks, Share2, FileText, Link2, Heading, Image as ImageIcon, Server, KeyRound, Boxes, Gauge, Wrench, LinkIcon, FileEdit, Building2, Activity, Globe, CheckCircle2, XCircle, AlertTriangle, Info, Download, Layers, Trash2, LayoutDashboard, Send, Loader2 } from "lucide-react";
-import { ScoreGauge } from "@/components/ScoreGauge";
+import { useState, useMemo, useEffect } from "react";
+import {
+  Sparkles,
+  AlertTriangle,
+  Layers,
+  Link2,
+  Boxes,
+  Gauge,
+  FileEdit,
+  ListChecks,
+  FileText,
+} from "lucide-react";
 import { Checklist } from "@/components/Checklist";
 import { SocialPreviewCard } from "@/components/SocialPreviewCard";
 import { FileViewer } from "@/components/FileViewer";
 import { KeywordPanel } from "@/components/KeywordPanel";
-import { SchemaPanel } from "@/components/SchemaPanel";
 import { PageSpeedPanel } from "@/components/PageSpeedPanel";
-import { RecommendationsPanel } from "@/components/RecommendationsPanel";
-import { LinkAnalysisPanel } from "@/components/LinkAnalysisPanel";
 import { UpdatedContentPanel } from "@/components/UpdatedContentPanel";
 import { GooglePropertiesPanel } from "@/components/GooglePropertiesPanel";
 import { InternalLinkStatusPanel } from "@/components/InternalLinkStatusPanel";
-import { CopyButton } from "@/components/CopyButton";
-import { CATEGORY_META, CATEGORY_ORDER, STATUS_META, type AuditResult, type CheckCategory, type CheckStatus, type CustomAuditData } from "@/types";
-import { formatLodPayload, dispatchToLodEndpoint } from "@/lib/lodWebhook";
+import { type AuditResult, type CustomAuditData } from "@/types";
 import { SendToOutreachModal } from "@/components/SendToOutreachModal";
+
+// SEMrush Extended Suite
+import {
+  buildSemrushPillars,
+  getTopBottlenecks,
+  type SemrushPillarId,
+  type SemrushBottleneck,
+} from "@/components/semrush/semrushTypes";
+import { SemrushHeader } from "@/components/semrush/SemrushHeader";
+import { SemrushOverview } from "@/components/semrush/SemrushOverview";
+import { SemrushIssuesTable } from "@/components/semrush/SemrushIssuesTable";
+import { SemrushThematicReports } from "@/components/semrush/SemrushThematicReports";
+import { SemrushArchitecturePanel } from "@/components/semrush/SemrushArchitecturePanel";
+import { SemrushSchemaInspector } from "@/components/semrush/SemrushSchemaInspector";
+import { SemrushFixModal } from "@/components/semrush/SemrushFixModal";
 
 interface ResultsViewProps {
   result: AuditResult;
@@ -25,42 +44,95 @@ interface ResultsViewProps {
   onCreateSiteDashboard?: (url: string, title?: string | null) => void;
 }
 
-type Tab = "overview" | "custom-audit" | "checklist" | "keywords" | "schema" | "social" | "files" | "links" | "link-analysis" | "link-status" | "headings" | "images" | "headers" | "speed" | "recommendations" | "updated-content" | "google-properties";
+type SemrushTab =
+  | "overview"
+  | "issues"
+  | "thematic"
+  | "architecture"
+  | "schema"
+  | "performance"
+  | "content"
+  | "checklist"
+  | "files"
+  | "custom-audit";
 
-const TABS: { id: Tab; label: string; icon: typeof BarChart3 }[] = [
-  { id: "overview", label: "Overview", icon: BarChart3 },
-  { id: "custom-audit", label: "Custom Audit", icon: Layers },
-  { id: "checklist", label: "Checklist", icon: ListChecks },
-  { id: "updated-content", label: "Content Updates", icon: FileEdit },
-  { id: "keywords", label: "Keywords", icon: KeyRound },
-  { id: "schema", label: "Schema", icon: Boxes },
-  { id: "social", label: "Social Preview", icon: Share2 },
-  { id: "speed", label: "Performance", icon: Gauge },
-  { id: "recommendations", label: "Recommendations", icon: Wrench },
-  { id: "link-analysis", label: "Link Analysis", icon: LinkIcon },
-  { id: "link-status", label: "Link Status", icon: Activity },
-  { id: "google-properties", label: "Google Properties", icon: Building2 },
+interface TabMeta {
+  id: SemrushTab;
+  label: string;
+  icon: typeof Sparkles;
+  badge?: (res: AuditResult) => string | number | null;
+}
+
+const SEMRUSH_TABS: TabMeta[] = [
+  { id: "overview", label: "Overview", icon: Sparkles },
+  {
+    id: "issues",
+    label: "Issues Explorer",
+    icon: AlertTriangle,
+    badge: (res) =>
+      (res.checks || []).filter((c) => c.status === "fail" || c.status === "warn").length || null,
+  },
+  { id: "thematic", label: "Thematic Reports", icon: Layers },
+  { id: "architecture", label: "Site Architecture & Links", icon: Link2 },
+  { id: "schema", label: "Structured Data & SERP", icon: Boxes },
+  { id: "performance", label: "Core Web Vitals & Speed", icon: Gauge },
+  { id: "content", label: "Content & Keywords", icon: FileEdit },
+  { id: "checklist", label: "Remediation Checklist", icon: ListChecks },
   { id: "files", label: "Crawler Files", icon: FileText },
-  { id: "links", label: "All Links", icon: Link2 },
-  { id: "headings", label: "Headings", icon: Heading },
-  { id: "images", label: "Images", icon: ImageIcon },
-  { id: "headers", label: "HTTP Headers", icon: Server },
+  { id: "custom-audit", label: "Custom Extraction", icon: Layers },
 ];
 
-export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashboard }: ResultsViewProps) {
-  const [tab, setTab] = useState<Tab>("overview");
-  const [isDispatching, setIsDispatching] = useState(false);
-  const [dispatchStatus, setDispatchStatus] = useState<"idle" | "success" | "error">("idle");
-  const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
+export function ResultsView({
+  result,
+  url,
+  auditId,
+  onDelete,
+  onCreateSiteDashboard,
+}: ResultsViewProps) {
+  const [tab, setTab] = useState<SemrushTab>("overview");
+  const [selectedPillarId, setSelectedPillarId] = useState<SemrushPillarId>("crawlability");
+  const [activeFixBottleneck, setActiveFixBottleneck] = useState<SemrushBottleneck | null>(null);
+
+  // Outreach & Webhook states
   const [showOutreachModal, setShowOutreachModal] = useState(false);
 
-  const checks = result.checks || [];
-  const counts = checks.reduce(
-    (acc, c) => { acc[c.status] = (acc[c.status] || 0) + 1; return acc; },
-    { pass: 0, fail: 0, warn: 0, info: 0 },
-  );
+  // Resolved checklist tracker
+  const [resolvedIds, setResolvedIds] = useState<Set<string>>(() => {
+    if (auditId) {
+      try {
+        const stored = localStorage.getItem(`audit-tasks-${auditId}`);
+        if (stored) return new Set(JSON.parse(stored));
+      } catch {
+        // ignore
+      }
+    }
+    return new Set();
+  });
 
-  const handleExport = () => {
+  useEffect(() => {
+    if (auditId) {
+      try {
+        localStorage.setItem(`audit-tasks-${auditId}`, JSON.stringify([...resolvedIds]));
+      } catch {
+        // ignore
+      }
+    }
+  }, [resolvedIds, auditId]);
+
+  const handleToggleResolve = (checkId: string) => {
+    setResolvedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(checkId)) next.delete(checkId);
+      else next.add(checkId);
+      return next;
+    });
+  };
+
+  // Derive SEMrush Pillars & Ranked Bottlenecks
+  const pillars = useMemo(() => buildSemrushPillars(result), [result]);
+  const bottlenecks = useMemo(() => getTopBottlenecks(result, url), [result, url]);
+
+  const handleExportPdf = () => {
     let domain = "Domain";
     try {
       domain = new URL(url).hostname.replace(/^www\./, "").replace(/[^a-z0-9]/gi, "_");
@@ -68,272 +140,172 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
       domain = url.replace(/[^a-z0-9]/gi, "_");
     }
     const originalTitle = document.title;
-    document.title = `Technical_Audit_${domain}.pdf`;
+    document.title = `SEMrush_Technical_Audit_${domain}.pdf`;
     window.print();
     setTimeout(() => {
       document.title = originalTitle;
     }, 1200);
   };
 
-  const handleDispatchLod = async () => {
-    setIsDispatching(true);
-    setDispatchStatus("idle");
-    setDispatchMessage(null);
-    try {
-      const payload = formatLodPayload(result, url, result.title || undefined, auditId);
-      const res = await dispatchToLodEndpoint(payload);
-      if (res.success) {
-        setDispatchStatus("success");
-        setDispatchMessage(`Delivered to LOD endpoint (${res.statusCode} OK) in ${res.attempts} attempt(s).`);
-      } else {
-        setDispatchStatus("error");
-        setDispatchMessage(res.message);
-      }
-    } catch (e) {
-      setDispatchStatus("error");
-      setDispatchMessage(e instanceof Error ? e.message : "Dispatch failed");
-    } finally {
-      setIsDispatching(false);
-    }
-  };
-
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* ODS Client-Ready PDF / Print Header */}
-      <div className="hidden print:block p-4 mb-4 border-b-2 border-slate-900 bg-white">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-black text-slate-900 tracking-tight">
-              ONLINE DIGITAL SOLUTION (ODS)
-            </h1>
-            <p className="text-xs text-slate-600 font-bold uppercase tracking-wider">
-              Technical Audit & Architecture Diagnostic Report
-            </p>
-          </div>
-          <div className="text-right text-xs text-slate-600">
-            <p className="font-mono font-bold text-slate-900">{url}</p>
-            <p className="text-[11px] text-slate-500">
-              Audit Date: {new Date().toLocaleDateString(undefined, { dateStyle: "long" })}
-            </p>
-          </div>
-        </div>
-      </div>
+      {/* 1. SEMrush Executive Header & Competitive Benchmark */}
+      <SemrushHeader
+        result={result}
+        url={url}
+        onExportPdf={handleExportPdf}
+        onOpenOutreachModal={() => setShowOutreachModal(true)}
+        onCreateSiteDashboard={onCreateSiteDashboard}
+        onDelete={onDelete}
+      />
 
-      {/* Score + summary hero card */}
-      <div className="p-6 rounded-2xl bg-gradient-to-b from-white via-white to-slate-50/50 border border-slate-200/80 shadow-sm">
-        <div className="flex flex-col md:flex-row gap-6 items-center md:items-start">
-          <ScoreGauge score={result.score} size={170} />
-
-          <div className="flex-1 w-full space-y-4">
-            {/* Stat Cards */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-              <StatCard label="Passed" value={counts.pass} color="text-emerald-700" bg="bg-emerald-50/80 border border-emerald-200/60" icon={CheckCircle2} />
-              <StatCard label="Warnings" value={counts.warn} color="text-amber-700" bg="bg-amber-50/80 border border-amber-200/60" icon={AlertTriangle} />
-              <StatCard label="Failed" value={counts.fail} color="text-rose-700" bg="bg-rose-50/80 border border-rose-200/60" icon={XCircle} />
-              <StatCard label="Notice" value={counts.info} color="text-sky-700" bg="bg-sky-50/80 border border-sky-200/60" icon={Info} />
-            </div>
-
-            {/* Target info */}
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/70 space-y-1.5 text-xs">
-              <InfoRow label="Title" value={result.title} />
-              <InfoRow label="Description" value={result.description} />
-              <InfoRow label="Audited URL" value={url} mono />
-            </div>
-
-            {/* Tags & Export Toolbar */}
-            <div className="flex gap-2 flex-wrap items-center justify-between pt-1">
-              <div className="flex gap-1.5 flex-wrap items-center">
-                {result.hasTOC && <Badge label="TOC Active" color="bg-blue-50 text-blue-700 border border-blue-200" />}
-                {result.hasFAQ && <Badge label="FAQ Schema" color="bg-violet-50 text-violet-700 border border-violet-200" />}
-                {result.hasInfographic && <Badge label="Infographics" color="bg-emerald-50 text-emerald-700 border border-emerald-200" />}
-                {(result.schema || []).length > 0 && <Badge label={`${result.schema.length} Schemas`} color="bg-amber-50 text-amber-700 border border-amber-200" />}
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                {/* LOD Webhook Handshake Button */}
-                <button
-                  type="button"
-                  onClick={handleDispatchLod}
-                  disabled={isDispatching}
-                  className={`inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl font-bold border transition-all shadow-xs active:scale-95 print:hidden cursor-pointer ${
-                    dispatchStatus === "success"
-                      ? "bg-emerald-50 text-emerald-800 border-emerald-300"
-                      : dispatchStatus === "error"
-                      ? "bg-rose-50 text-rose-800 border-rose-300"
-                      : "bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200"
-                  }`}
-                  title="Dispatch structured audit payload to LOD endpoint"
-                >
-                  {isDispatching ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-600" />
-                  ) : dispatchStatus === "success" ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  ) : dispatchStatus === "error" ? (
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
-                  ) : (
-                    <Send className="w-3.5 h-3.5 text-teal-600" />
-                  )}
-                  <span>
-                    {isDispatching
-                      ? "Dispatching..."
-                      : dispatchStatus === "success"
-                      ? "LOD Dispatched (200 OK)"
-                      : dispatchStatus === "error"
-                      ? "LOD Failed"
-                      : "Dispatch to LOD"}
-                  </span>
-                </button>
-
-                {/* Send to Outreach Dashboard Button */}
-                <button
-                  type="button"
-                  onClick={() => setShowOutreachModal(true)}
-                  className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
-                  title="Push lead and attached audit PDF to Outreach Dashboard (Autopilot)"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>Send to Outreach</span>
-                </button>
-
-                {onCreateSiteDashboard && (
-                  <button
-                    type="button"
-                    onClick={() => onCreateSiteDashboard(url, result.title)}
-                    className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-teal-50 hover:bg-teal-100/80 text-teal-800 font-bold border border-teal-200/80 transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
-                    title="Create or open dedicated Site Dashboard for this domain"
-                  >
-                    <LayoutDashboard className="w-3.5 h-3.5 text-teal-600" />
-                    <span>Site Dashboard</span>
-                  </button>
-                )}
-
-                {onDelete && (
-                  <button
-                    type="button"
-                    onClick={onDelete}
-                    className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold border border-rose-200/80 transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
-                    title="Delete this project from history"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Delete Project</span>
-                  </button>
-                )}
-
-                <button
-                  onClick={handleExport}
-                  className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold transition-all shadow-xs active:scale-95 print:hidden cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Export PDF Report</span>
-                </button>
-              </div>
-            </div>
-
-            {/* LOD Dispatch Notification Message */}
-            {dispatchMessage && (
-              <div
-                className={`p-3 rounded-xl border text-xs font-semibold flex items-center justify-between print:hidden ${
-                  dispatchStatus === "success"
-                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                    : "bg-rose-50 text-rose-800 border-rose-200"
-                }`}
-              >
-                <span>{dispatchMessage}</span>
-                <button
-                  type="button"
-                  onClick={() => setDispatchMessage(null)}
-                  className="text-[11px] font-bold underline ml-2 cursor-pointer"
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Category score dashboard */}
-      {result.categoryScores && result.categoryScores.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {CATEGORY_ORDER.map((cat) => {
-            const cs = result.categoryScores.find((c) => c.category === cat);
-            if (!cs) return null;
-            const meta = CATEGORY_META[cat as CheckCategory];
-            const scoreClass =
-              cs.score >= 80 ? "text-emerald-600" : cs.score >= 50 ? "text-amber-600" : "text-rose-600";
-            const barGradient =
-              cs.score >= 80 ? "bg-emerald-500" : cs.score >= 50 ? "bg-amber-500" : "bg-rose-500";
-
-            return (
-              <div
-                key={cat}
-                className="rounded-2xl border border-slate-200/90 bg-white p-3.5 text-center shadow-xs hover:shadow-sm transition-all"
-              >
-                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1 truncate">
-                  {meta.label}
-                </p>
-                <p className={`text-2xl font-extrabold tracking-tight ${scoreClass}`}>{cs.score}</p>
-                <div className="w-full h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden">
-                  <div
-                    className={`h-full ${barGradient} rounded-full transition-all duration-700`}
-                    style={{ width: `${cs.score}%` }}
-                  />
-                </div>
-                <div className="flex justify-center gap-2 mt-2 text-[10px] font-bold">
-                  {cs.fail > 0 && <span className="text-rose-500">{cs.fail} Fail</span>}
-                  {cs.warn > 0 && <span className="text-amber-500">{cs.warn} Warn</span>}
-                  {cs.pass > 0 && <span className="text-emerald-500">{cs.pass} Pass</span>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Tabs - Modern Pills */}
+      {/* 2. SEMrush Organized Tab Navigation Bar */}
       <div className="flex gap-1.5 overflow-x-auto pb-1.5 border-b border-slate-200/80 print:hidden scrollbar-none">
-        {TABS.filter((t) => t.id !== "custom-audit" || Boolean(result.customAudit)).map((t) => {
+        {SEMRUSH_TABS.filter((t) => t.id !== "custom-audit" || Boolean(result.customAudit)).map((t) => {
           const Icon = t.icon;
           const isActive = tab === t.id;
+          const badgeVal = t.badge ? t.badge(result) : null;
+
           return (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer active:scale-95 ${
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer active:scale-95 ${
                 isActive
-                  ? "bg-teal-600 text-white shadow-xs shadow-teal-600/20"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
+                  ? "bg-slate-900 text-white shadow-md shadow-slate-900/15"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
               }`}
             >
-              <Icon className={`w-3.5 h-3.5 ${isActive ? "text-white" : "text-slate-400"}`} />
+              <Icon className={`w-3.5 h-3.5 ${isActive ? "text-orange-400" : "text-slate-400"}`} />
               <span>{t.label}</span>
+              {badgeVal !== null && (
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                    isActive ? "bg-orange-500 text-white" : "bg-slate-200 text-slate-700"
+                  }`}
+                >
+                  {badgeVal}
+                </span>
+              )}
             </button>
           );
         })}
       </div>
 
-      {/* Tab content */}
-      <div className="min-h-[300px]">
-        {tab === "overview" && <OverviewTab result={result} counts={counts} />}
-        {tab === "custom-audit" && result.customAudit && <CustomAuditPanel data={result.customAudit} />}
-        {tab === "checklist" && <Checklist checks={result.checks} auditId={auditId} />}
-        {tab === "keywords" && <KeywordPanel keywords={result.keywords} />}
-        {tab === "schema" && <SchemaPanel schemas={result.schema} url={url} />}
-        {tab === "social" && <SocialPreviewCard preview={result.socialPreview} url={url} />}
-        {tab === "speed" && <PageSpeedPanel pageSpeed={result.pageSpeed} />}
-        {tab === "recommendations" && <RecommendationsPanel recommendations={result.recommendations} />}
-        {tab === "link-analysis" && <LinkAnalysisPanel linkAnalysis={result.linkAnalysis} />}
-        {tab === "link-status" && <InternalLinkStatusPanel links={result.internalLinkStatuses || []} />}
-        {tab === "updated-content" && <UpdatedContentPanel recommendations={result.contentRecommendations || []} />}
-        {tab === "google-properties" && <GooglePropertiesPanel properties={result.googleProperties || []} />}
-        {tab === "files" && <FileViewer robotsContent={result.robotsContent} sitemapContent={result.sitemapContent} sitemapUrl={result.sitemapUrl} />}
-        {tab === "links" && <LinksView links={result.links} />}
-        {tab === "headings" && <HeadingsView headings={result.headings} />}
-        {tab === "images" && <ImagesView images={result.images} />}
-        {tab === "headers" && <HeadersView headers={result.headers} />}
+      {/* 3. SEMrush Tab Content Area */}
+      <div className="min-h-[400px]">
+        {/* Tab 1: Overview */}
+        {tab === "overview" && (
+          <SemrushOverview
+            result={result}
+            url={url}
+            pillars={pillars}
+            bottlenecks={bottlenecks}
+            onSelectPillar={(pillarId) => {
+              setSelectedPillarId(pillarId);
+              setTab("thematic");
+            }}
+            onOpenFixModal={setActiveFixBottleneck}
+            resolvedIds={resolvedIds}
+            onToggleResolve={handleToggleResolve}
+          />
+        )}
+
+        {/* Tab 2: Issues Explorer */}
+        {tab === "issues" && (
+          <SemrushIssuesTable
+            result={result}
+            url={url}
+            onOpenFixModal={setActiveFixBottleneck}
+            resolvedIds={resolvedIds}
+            onToggleResolve={handleToggleResolve}
+          />
+        )}
+
+        {/* Tab 3: Thematic Reports */}
+        {tab === "thematic" && (
+          <SemrushThematicReports
+            pillars={pillars}
+            url={url}
+            selectedPillarId={selectedPillarId}
+            onOpenFixModal={setActiveFixBottleneck}
+            resolvedIds={resolvedIds}
+            onToggleResolve={handleToggleResolve}
+          />
+        )}
+
+        {/* Tab 4: Site Architecture & Links */}
+        {tab === "architecture" && (
+          <div className="space-y-6">
+            <SemrushArchitecturePanel
+              linkAnalysis={result.linkAnalysis}
+              links={result.links}
+              pageUrl={url}
+            />
+            {result.internalLinkStatuses && result.internalLinkStatuses.length > 0 && (
+              <InternalLinkStatusPanel links={result.internalLinkStatuses} />
+            )}
+          </div>
+        )}
+
+        {/* Tab 5: Structured Data & SERP */}
+        {tab === "schema" && (
+          <div className="space-y-6">
+            <SemrushSchemaInspector schemas={result.schema} url={url} />
+            <SocialPreviewCard preview={result.socialPreview} url={url} />
+          </div>
+        )}
+
+        {/* Tab 6: Core Web Vitals & Speed */}
+        {tab === "performance" && (
+          <PageSpeedPanel pageSpeed={result.pageSpeed} />
+        )}
+
+        {/* Tab 7: Content & Keywords */}
+        {tab === "content" && (
+          <div className="space-y-6">
+            <KeywordPanel keywords={result.keywords} />
+            {result.contentRecommendations && result.contentRecommendations.length > 0 && (
+              <UpdatedContentPanel recommendations={result.contentRecommendations} />
+            )}
+            {result.googleProperties && result.googleProperties.length > 0 && (
+              <GooglePropertiesPanel properties={result.googleProperties} />
+            )}
+          </div>
+        )}
+
+        {/* Tab 8: Remediation Checklist */}
+        {tab === "checklist" && (
+          <Checklist checks={result.checks} auditId={auditId} />
+        )}
+
+        {/* Tab 9: Crawler Files */}
+        {tab === "files" && (
+          <div className="space-y-6">
+            <FileViewer
+              robotsContent={result.robotsContent}
+              sitemapContent={result.sitemapContent}
+              sitemapUrl={result.sitemapUrl}
+            />
+            <HeadersView headers={result.headers} />
+          </div>
+        )}
+
+        {/* Tab 10: Custom Extraction */}
+        {tab === "custom-audit" && result.customAudit && (
+          <CustomAuditPanel data={result.customAudit} />
+        )}
       </div>
 
-      {/* Send to Outreach Dashboard Modal */}
+      {/* 4. Interactive "Why & How to Fix" Prescription Modal */}
+      <SemrushFixModal
+        bottleneck={activeFixBottleneck}
+        onClose={() => setActiveFixBottleneck(null)}
+        isResolved={Boolean(activeFixBottleneck && resolvedIds.has(activeFixBottleneck.check.id))}
+        onToggleResolve={handleToggleResolve}
+      />
+
+      {/* 5. Send to Outreach Modal */}
       <SendToOutreachModal
         isOpen={showOutreachModal}
         onClose={() => setShowOutreachModal(false)}
@@ -345,250 +317,26 @@ export function ResultsView({ result, url, auditId, onDelete, onCreateSiteDashbo
   );
 }
 
-function downloadCsv(filename: string, headers: string[], rows: (string | number | null)[][]): void {
-  const escape = (value: string | number | null): string => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\n");
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
-function ExportCsvButton({ filename, headers, rows }: { filename: string; headers: string[]; rows: (string | number | null)[][] }) {
-  return <button type="button" onClick={() => downloadCsv(filename, headers, rows)} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"><Download className="w-3.5 h-3.5" />Export</button>;
-}
-
-function CustomAuditPanel({ data }: { data: CustomAuditData }) {
-  const section = (title: string, count: number, children: React.ReactNode, headers: string[], rows: (string | number | null)[][], filename: string) => (
-    <section className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100"><h3 className="text-sm font-semibold text-slate-700">{title}</h3><div className="flex items-center gap-2"><ExportCsvButton filename={filename} headers={headers} rows={rows} /><span className="text-xs font-medium text-slate-500 bg-slate-100 rounded-full px-2 py-1">{count}</span></div></div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
-  return (
-    <div className="space-y-4">
-      <div><h2 className="text-lg font-semibold text-slate-800">Custom site findings</h2><p className="text-sm text-slate-500 mt-1">Collected across the pages found in the site sitemap. Every section can be exported separately.</p></div>
-      {section("Page metadata", data.pages.length, data.pages.length === 0 ? <EmptyState message="No selected metadata fields found." /> : <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100"><th className="pb-2 pr-3">Page</th><th className="pb-2 pr-3">Title</th><th className="pb-2 pr-3">Description</th><th className="pb-2 pr-3">H1</th><th className="pb-2 pr-3">H2</th><th className="pb-2">Canonical / Robots</th></tr></thead><tbody>{data.pages.map((page) => <tr key={page.url} className="border-b border-slate-50 last:border-0 align-top"><td className="py-2 pr-3 text-blue-600 max-w-[220px] truncate">{page.url}</td><td className="py-2 pr-3">{page.title || "Not found"}</td><td className="py-2 pr-3">{page.description || "Not found"}</td><td className="py-2 pr-3">{page.h1.join(" | ") || "Not found"}</td><td className="py-2 pr-3">{page.h2.join(" | ") || "Not found"}</td><td className="py-2">{page.canonical || "No canonical"}{page.robotsMeta && <div className="text-amber-600">{page.robotsMeta}</div>}</td></tr>)}</tbody></table></div>, ["Page", "Title", "Description", "H1", "H2", "Canonical", "Robots"], data.pages.map((page) => [page.url, page.title, page.description, page.h1.join(" | "), page.h2.join(" | "), page.canonical, page.robotsMeta]), "custom-metadata.csv")}
-      {section("Duplicate titles, descriptions, and H1s", data.duplicates.length, data.duplicates.length === 0 ? <EmptyState message="No duplicate metadata found." /> : <div className="space-y-2">{data.duplicates.map((item) => <div key={`${item.type}-${item.value}`} className="rounded-lg bg-amber-50 border border-amber-100 p-3"><p className="text-sm font-medium text-slate-700 capitalize">Duplicate {item.type}: {item.value}</p><p className="text-xs text-slate-500 mt-1">Found on {item.pages.join(", ")}</p></div>)}</div>, ["Type", "Value", "Pages"], data.duplicates.map((item) => [item.type, item.value, item.pages.join(" | ")]), "custom-duplicates.csv")}
-      {section("Missing image alt text", data.missingAlt.length, data.missingAlt.length === 0 ? <EmptyState message="No missing alt text found." /> : <div className="space-y-2">{data.missingAlt.map((item) => <div key={`${item.page}-${item.src}`} className="text-sm"><p className="text-slate-700 font-medium truncate">{item.src}</p><p className="text-xs text-blue-600 truncate">{item.page}</p></div>)}</div>, ["Page", "Image source"], data.missingAlt.map((item) => [item.page, item.src]), "custom-missing-alt.csv")}
-      {section("Redirecting URLs", data.redirects.length, data.redirects.length === 0 ? <EmptyState message="No redirecting URLs found." /> : <div className="space-y-2">{data.redirects.map((item) => <div key={item.source} className="text-sm"><span className="text-slate-700">{item.status} {item.source}</span><span className="text-slate-400"> → {item.target || "location not provided"}</span></div>)}</div>, ["Source", "Target", "Status"], data.redirects.map((item) => [item.source, item.target, item.status]), "custom-redirects.csv")}
-      {section("Tracking codes", data.trackingCodes.length, data.trackingCodes.length === 0 ? <EmptyState message="No recognized tracking codes found." /> : <div className="space-y-2">{data.trackingCodes.map((item) => <div key={`${item.type}-${item.id}`} className="text-sm"><p className="font-medium text-slate-700">{item.type}{item.id ? ` (${item.id})` : ""}</p><p className="text-xs text-slate-500">Present on {item.pages.length} page(s)</p></div>)}</div>, ["Type", "ID", "Pages"], data.trackingCodes.map((item) => [item.type, item.id, item.pages.join(" | ")]), "custom-tracking-codes.csv")}
-      {section("Forms by page", data.forms.length, data.forms.length === 0 ? <EmptyState message="No forms found." /> : <div className="space-y-2">{data.forms.map((form) => <div key={`${form.page}-${form.action}`} className="text-sm"><p className="font-medium text-slate-700">{form.method} {form.action}</p><p className="text-xs text-blue-600 truncate">{form.page}</p></div>)}</div>, ["Page", "Action", "Method"], data.forms.map((form) => [form.page, form.action, form.method]), "custom-forms.csv")}
-    </div>
-  );
-}
-
-function OverviewTab({ result, counts }: { result: AuditResult; counts: Record<CheckStatus, number> }) {
-  const checks = result.checks || [];
-  const failedChecks = checks.filter((c) => c.status === "fail");
-  const warnChecks = checks.filter((c) => c.status === "warn");
-
-  return (
-    <div className="space-y-6">
-      {/* Category breakdown */}
-      {result.categoryScores && result.categoryScores.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-            <Layers className="w-4 h-4 text-slate-400" />
-            Category Breakdown
-          </h3>
-          <div className="space-y-3">
-            {CATEGORY_ORDER.map((cat) => {
-              const cs = result.categoryScores.find((c) => c.category === cat);
-              if (!cs || cs.pass + cs.warn + cs.fail + cs.info === 0) return null;
-              const meta = CATEGORY_META[cat as CheckCategory];
-              const scoreClass = cs.score >= 80 ? "bg-emerald-500" : cs.score >= 50 ? "bg-amber-500" : "bg-rose-500";
-              return (
-                <div key={cat} className="flex items-center gap-3">
-                  <span className="text-xs text-slate-500 w-28 flex-shrink-0">{meta.label}</span>
-                  <div className="flex-1 h-6 bg-slate-100 rounded-lg overflow-hidden relative">
-                    <div className={`h-full ${scoreClass} rounded-lg transition-all duration-500`} style={{ width: `${cs.score}%` }} />
-                    <span className="absolute inset-0 flex items-center justify-end pr-2 text-xs font-medium text-slate-700">{cs.score}/100</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Score summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {(["pass", "warn", "fail", "info"] as CheckStatus[]).map((s) => (
-          <div key={s} className={`rounded-xl ${STATUS_META[s].bg} p-4 flex items-center gap-3`}>
-            <div className={`w-2.5 h-2.5 rounded-full ${STATUS_META[s].dot} flex-shrink-0`} />
-            <div>
-              <p className={`text-2xl font-bold ${STATUS_META[s].color}`}>{counts[s]}</p>
-              <p className="text-xs text-slate-500">{STATUS_META[s].label}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Failed checks */}
-      {failedChecks.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-            <XCircle className="w-4 h-4 text-rose-500" />
-            Failed Checks ({failedChecks.length})
-          </h3>
-          <div className="space-y-2">
-            {failedChecks.map((c) => (
-              <div key={c.id} className="flex items-start gap-3 p-3 rounded-lg bg-rose-50 border border-rose-100">
-                <XCircle className="w-4 h-4 text-rose-500 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-slate-700">{c.label}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">{c.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Warnings */}
-      {warnChecks.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
-            Warnings ({warnChecks.length})
-          </h3>
-          <div className="space-y-2">
-            {warnChecks.map((c) => (
-              <div key={c.id} className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 border border-amber-100">
-                <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-slate-700">{c.label}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">{c.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Quick facts */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        <QuickFact icon={Globe} label="HTTPS" value={(result.checks || []).find((c) => c.id === "https")?.status === "pass" ? "Yes" : "No"} />
-        <QuickFact icon={Activity} label="Response Time" value={`${result.pageSpeed?.responseTimeMs || 0}ms`} />
-        <QuickFact icon={Gauge} label="HTML Size" value={`${((result.pageSpeed?.htmlSizeBytes || 0) / 1024).toFixed(1)}KB`} />
-        <QuickFact icon={Link2} label="Internal Links" value={result.linkAnalysis?.internal?.length || 0} />
-        <QuickFact icon={Link2} label="External Links" value={result.linkAnalysis?.external?.length || 0} />
-        <QuickFact icon={Boxes} label="Schema Types" value={(result.schema || []).length} />
-      </div>
-    </div>
-  );
-}
-
-function QuickFact({ icon: Icon, label, value }: { icon: typeof Globe; label: string; value: string | number }) {
-  return (
-    <div className="flex items-center gap-3 p-3 rounded-xl border border-slate-100 bg-white">
-      <Icon className="w-4 h-4 text-slate-400 flex-shrink-0" />
-      <div>
-        <p className="text-xs text-slate-400">{label}</p>
-        <p className="text-sm font-medium text-slate-700">{value}</p>
-      </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value, color, bg, icon: Icon }: { label: string; value: number; color: string; bg: string; icon: typeof CheckCircle2 }) {
-  return (
-    <div className={`rounded-xl ${bg} p-4 flex items-center gap-3`}>
-      <Icon className={`w-5 h-5 ${color} flex-shrink-0`} />
-      <div>
-        <p className={`text-2xl font-bold ${color}`}>{value}</p>
-        <p className="text-xs text-slate-500 mt-0.5">{label}</p>
-      </div>
-    </div>
-  );
-}
-
-function Badge({ label, color }: { label: string; color: string }) {
-  return <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${color}`}>{label}</span>;
-}
-
-function InfoRow({ label, value, mono }: { label: string; value: string | null; mono?: boolean }) {
-  return (
-    <div className="flex gap-2 text-sm">
-      <span className="text-slate-400 flex-shrink-0 w-24">{label}:</span>
-      <span className={`text-slate-700 truncate ${mono ? "font-mono text-xs" : ""}`}>
-        {value || "Not found"}
-      </span>
-    </div>
-  );
-}
-
-function LinksView({ links }: { links?: { href: string; rel: string; text: string }[] }) {
-  const safeLinks = links || [];
-  if (safeLinks.length === 0) return <EmptyState message="No links found on this page." />;
-  return (
-    <div className="space-y-2 max-h-96 overflow-y-auto">
-      {safeLinks.map((link, i) => (
-        <div key={i} className="flex items-center gap-3 p-3 rounded-lg border border-slate-100 bg-white">
-          <Link2 className="w-4 h-4 text-slate-400 flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm text-slate-700 truncate">{link.text || "(no text)"}</p>
-            <p className="text-xs text-slate-400 truncate font-mono">{link.href}</p>
-          </div>
-          <CopyButton text={link.href} />
-          {link.rel && (
-            <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded">{link.rel}</span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function HeadingsView({ headings }: { headings?: { level: number; text: string }[] }) {
-  const safeHeadings = headings || [];
-  if (safeHeadings.length === 0) return <EmptyState message="No headings found on this page." />;
-  return (
-    <div className="space-y-1">
-      {safeHeadings.map((h, i) => (
-        <div key={i} className="flex items-center gap-3 py-1.5" style={{ paddingLeft: `${(h.level - 1) * 20}px` }}>
-          <span className="text-xs font-mono text-slate-400 w-8">H{h.level}</span>
-          <span className="text-sm text-slate-700">{h.text || "(empty)"}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ImagesView({ images }: { images?: { src: string; alt: string }[] }) {
-  const safeImages = images || [];
-  if (safeImages.length === 0) return <EmptyState message="No images found on this page." />;
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      {safeImages.map((img, i) => (
-        <div key={i} className="flex items-start gap-3 p-3 rounded-lg border border-slate-100 bg-white">
-          <ImageIcon className="w-4 h-4 text-slate-400 flex-shrink-0 mt-0.5" />
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-slate-500 truncate font-mono">{img.src}</p>
-            <p className={`text-xs mt-1 ${img.alt ? "text-emerald-600" : "text-rose-500"}`}>
-              {img.alt ? `alt: "${img.alt}"` : "Missing alt text"}
-            </p>
-          </div>
-          <CopyButton text={img.src} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function HeadersView({ headers }: { headers?: Record<string, string> }) {
   const entries = Object.entries(headers || {});
-  if (entries.length === 0) return <EmptyState message="No HTTP headers returned." />;
+  if (entries.length === 0) {
+    return <div className="text-center py-12 text-slate-400 text-sm">No HTTP headers returned.</div>;
+  }
   return (
-    <div className="rounded-xl border border-slate-200 overflow-hidden">
-      <table className="w-full text-sm">
-        <tbody>
+    <div className="rounded-2xl border border-slate-200/90 bg-white overflow-hidden shadow-xs">
+      <div className="p-4 border-b border-slate-100 bg-slate-50 font-bold text-xs text-slate-700">
+        HTTP Response Headers ({entries.length})
+      </div>
+      <table className="w-full text-xs">
+        <tbody className="divide-y divide-slate-100">
           {entries.map(([key, value]) => (
-            <tr key={key} className="border-b border-slate-50 last:border-0">
-              <td className="px-4 py-2.5 text-slate-500 font-mono text-xs whitespace-nowrap align-top w-1/3">{key}</td>
-              <td className="px-4 py-2.5 text-slate-700 font-mono text-xs break-all">{value}</td>
+            <tr key={key} className="hover:bg-slate-50">
+              <td className="px-4 py-2.5 text-slate-500 font-mono text-xs whitespace-nowrap align-top w-1/3">
+                {key}
+              </td>
+              <td className="px-4 py-2.5 text-slate-800 font-mono text-xs break-all">
+                {value}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -597,6 +345,78 @@ function HeadersView({ headers }: { headers?: Record<string, string> }) {
   );
 }
 
-function EmptyState({ message }: { message: string }) {
-  return <div className="text-center py-12 text-slate-400 text-sm">{message}</div>;
+function CustomAuditPanel({ data }: { data: CustomAuditData }) {
+  const downloadCsv = (filename: string, headers: string[], rows: (string | number | null)[][]) => {
+    const escape = (val: string | number | null) => `"${String(val ?? "").replace(/"/g, '""')}"`;
+    const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\n");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const section = (
+    title: string,
+    count: number,
+    children: React.ReactNode,
+    headers: string[],
+    rows: (string | number | null)[][],
+    filename: string
+  ) => (
+    <section className="rounded-2xl border border-slate-200/90 bg-white overflow-hidden shadow-xs">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
+        <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">{title}</h3>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => downloadCsv(filename, headers, rows)}
+            className="text-xs font-bold text-indigo-600 hover:text-indigo-800"
+          >
+            Export CSV
+          </button>
+          <span className="text-[10px] font-black text-slate-600 bg-slate-200/80 rounded-full px-2 py-0.5">
+            {count}
+          </span>
+        </div>
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+
+  return (
+    <div className="space-y-4">
+      {section(
+        "Page Metadata",
+        data.pages.length,
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-slate-400 border-b border-slate-100 font-bold uppercase text-[10px]">
+                <th className="pb-2 pr-3">Page</th>
+                <th className="pb-2 pr-3">Title</th>
+                <th className="pb-2 pr-3">Description</th>
+                <th className="pb-2 pr-3">H1</th>
+                <th className="pb-2">Canonical</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {data.pages.map((p) => (
+                <tr key={p.url}>
+                  <td className="py-2 pr-3 text-blue-600 font-mono truncate max-w-[200px]">{p.url}</td>
+                  <td className="py-2 pr-3">{p.title || "—"}</td>
+                  <td className="py-2 pr-3">{p.description || "—"}</td>
+                  <td className="py-2 pr-3">{p.h1.join(" | ") || "—"}</td>
+                  <td className="py-2 font-mono text-[11px]">{p.canonical || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+        ["Page", "Title", "Description", "H1", "Canonical"],
+        data.pages.map((p) => [p.url, p.title, p.description, p.h1.join(" | "), p.canonical]),
+        "custom-metadata.csv"
+      )}
+    </div>
+  );
 }

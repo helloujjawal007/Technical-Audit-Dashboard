@@ -182,3 +182,7 @@ export function downloadExcel(filename: string, rows: string[][]): void {
 export function generateIssueCsv(rows: string[][]): string {
   return rows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
 }
+
+export function generateDuplicateMissingCsv(rows: string[][]): string {
+  return rows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
+}

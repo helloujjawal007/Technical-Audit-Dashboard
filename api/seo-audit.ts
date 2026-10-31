@@ -30,10 +30,10 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   try {
     const body = await parseJsonBody(req);
-    if (!body.url) {
+    if (!body.url && (!Array.isArray(body.urls) || body.urls.length === 0)) {
       res.statusCode = 400;
       res.setHeader("Content-Type", "application/json");
-      return res.end(JSON.stringify({ error: "URL is required" }));
+      return res.end(JSON.stringify({ error: "URL or array of URLs is required" }));
     }
 
     const result = await handleSeoAudit(body);

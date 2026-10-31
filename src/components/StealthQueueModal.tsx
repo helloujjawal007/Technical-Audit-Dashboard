@@ -23,8 +23,9 @@ export function StealthQueueModal({ isOpen, onClose, onOpenReport }: StealthQueu
   const [jobs, setJobs] = useState<StealthJob[]>(() => getStealthJobs());
 
   useEffect(() => {
-    const handleUpdate = () => {
-      setJobs(getStealthJobs());
+    const handleUpdate = (e?: Event) => {
+      const customEvt = e as CustomEvent<StealthJob[]> | undefined;
+      setJobs(customEvt?.detail || getStealthJobs());
     };
     window.addEventListener("ods_stealth_jobs_updated", handleUpdate);
     const interval = setInterval(handleUpdate, 2000);

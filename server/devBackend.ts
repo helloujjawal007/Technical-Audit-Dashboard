@@ -63,11 +63,11 @@ export function devBackendPlugin(): Plugin {
             return sendJson(res, 200, { ip: rawIp.replace(/^::ffff:/, "") });
           }
 
-          // 2. SEO Audit & Sitemap Crawl
+          // 2. SEO Audit & Sitemap Crawl (Single & Batch)
           if (endpoint === "seo-audit") {
             const body = await parseJsonBody(req);
-            if (!body.url) {
-              return sendJson(res, 400, { error: "URL is required" });
+            if (!body.url && (!Array.isArray(body.urls) || body.urls.length === 0)) {
+              return sendJson(res, 400, { error: "URL or array of URLs is required" });
             }
             const result = await handleSeoAudit(body);
             return sendJson(res, 200, result);

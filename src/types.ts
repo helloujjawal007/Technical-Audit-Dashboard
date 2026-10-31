@@ -137,6 +137,9 @@ export interface CategoryScore {
 }
 
 export interface AuditResult {
+  auditId?: string;
+  url?: string;
+  fromCache?: boolean;
   score: number;
   title: string | null;
   description: string | null;

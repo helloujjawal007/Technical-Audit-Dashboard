@@ -78,8 +78,9 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
   const isDisabled = loading || (needsTextarea ? !multiUrls.trim() : !url.trim());
 
   const availableModes: { key: AuditMode; label: string; icon: React.ReactNode }[] = [
+    { key: "single", label: "Single Page", icon: <Globe className="w-3.5 h-3.5" /> },
     { key: "crawl", label: "Full Site Crawl", icon: <FileSearch className="w-3.5 h-3.5" /> },
-    { key: "multiple", label: "Multiple Pages", icon: <List className="w-3.5 h-3.5" /> },
+    { key: "multiple", label: "Multiple Pages / Batch", icon: <List className="w-3.5 h-3.5" /> },
   ];
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -135,6 +136,8 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
   const buttonLabel = loading
     ? effectiveMode === "staging"
       ? "Auditing staging..."
+      : effectiveMode === "single"
+      ? "Auditing Single Page..."
       : effectiveMode === "multiple"
       ? "Auditing batch..."
       : effectiveMode === "custom"
@@ -142,8 +145,10 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
       : "Crawling & Auditing Full Site..."
     : effectiveMode === "staging"
     ? "Audit Staging Site"
+    : effectiveMode === "single"
+    ? "Launch Single Page Audit"
     : effectiveMode === "multiple"
-    ? "Audit All Pages"
+    ? "Audit All Pages in Batch"
     : effectiveMode === "custom"
     ? "Run Custom Extraction"
     : "Launch Full Site Audit";
@@ -380,7 +385,13 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
       {/* 4. Target URL / Batch URLs Input */}
       <div>
         <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">
-          {needsTextarea ? (isStaging ? "Staging URLs (One per line)" : "Batch URLs (One per line)") : "Target Website Domain (Full Site Audit)"}
+          {needsTextarea
+            ? isStaging
+              ? "Staging URLs (One per line)"
+              : "Batch URLs (One per line or comma-separated)"
+            : effectiveMode === "single"
+            ? "Target Page URL (Single Page Audit)"
+            : "Target Website Domain (Full Site Crawl)"}
         </label>
 
         {needsTextarea ? (

@@ -1,10 +1,13 @@
-import { useState } from "react";
-import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, ExternalLink, Search, Pause, ListFilter, AlertTriangle, Link2, Zap } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, ExternalLink, Search, Pause, ListFilter, AlertTriangle, Link2, Zap, ChevronLeft, Wrench, Copy } from "lucide-react";
 import type { CrawlPageResult, AuditResult, CheckResult } from "@/types";
 import { scoreColor, CATEGORY_META, STATUS_META } from "@/types";
-import { generateCrawlCsv, downloadCsv, downloadExcel, generateIssueCsv } from "@/lib/csv";
+import { generateCrawlCsv, downloadCsv, downloadExcel, generateIssueCsv, generateDuplicateMissingCsv } from "@/lib/csv";
 import { ResultsView } from "@/components/ResultsView";
 import { CopyButton } from "@/components/CopyButton";
+import { ScoreGauge } from "@/components/ScoreGauge";
+import { SemrushFixModal } from "@/components/semrush/SemrushFixModal";
+import { getIssueGuidance, type SemrushBottleneck } from "@/components/semrush/semrushTypes";
 
 interface CrawlResultsViewProps {
   pages: CrawlPageResult[];
@@ -17,7 +20,7 @@ interface CrawlResultsViewProps {
   onOpenStealthQueue?: () => void;
 }
 
-type ViewMode = "urls" | "issues";
+type ViewMode = "urls" | "issues" | "duplicates-missing";
 
 type IssueGuidance = { explanation: string; fix: string };
 
@@ -57,24 +60,169 @@ export function CrawlResultsView({
   const [filter, setFilter] = useState<"all" | "completed" | "failed" | "warnings">("all");
   const [viewMode, setViewMode] = useState<ViewMode>("urls");
   const [expandedIssue, setExpandedIssue] = useState<string | null>(null);
+  const [fixBottleneck, setFixBottleneck] = useState<SemrushBottleneck | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [dupMissFilter, setDupMissFilter] = useState<"all" | "duplicates" | "missing">("all");
+  const [expandedDupGroup, setExpandedDupGroup] = useState<string | null>(null);
+  const [expandedMissKey, setExpandedMissKey] = useState<string | null>(null);
 
-  const completed = pages.filter((p) => p.status === "completed");
-  const failed = pages.filter((p) => p.status === "failed");
-  const warnings = completed.filter((p) => p.result && p.result.score < 80);
+  const completed = useMemo(() => pages.filter((p) => p.status === "completed"), [pages]);
+  const failed = useMemo(() => pages.filter((p) => p.status === "failed"), [pages]);
+  const warnings = useMemo(() => completed.filter((p) => p.result && p.result.score < 80), [completed]);
 
-  const filtered = pages.filter((p) => {
-    if (filter === "completed") return p.status === "completed";
-    if (filter === "failed") return p.status === "failed";
-    if (filter === "warnings") return p.result && p.result.score < 80;
-    return true;
-  });
+  // Cross-Page Duplicate Analysis
+  const duplicatesAnalysis = useMemo(() => {
+    const titleMap = new Map<string, string[]>();
+    const descMap = new Map<string, string[]>();
+    const h1Map = new Map<string, string[]>();
+    const multipleCanonicalPages: string[] = [];
 
-  const avgScore = completed.length > 0
-    ? Math.round(completed.reduce((sum, p) => sum + (p.result?.score || 0), 0) / completed.length)
-    : 0;
+    for (const page of completed) {
+      if (!page.result) continue;
+      const t = page.result.title?.trim();
+      if (t) {
+        const key = t.toLowerCase();
+        if (!titleMap.has(key)) titleMap.set(key, []);
+        titleMap.get(key)!.push(page.url);
+      }
+      const d = page.result.description?.trim();
+      if (d) {
+        const key = d.toLowerCase();
+        if (!descMap.has(key)) descMap.set(key, []);
+        descMap.get(key)!.push(page.url);
+      }
+      const firstH1 = page.result.headings?.find((h) => h.level === 1)?.text?.trim();
+      if (firstH1) {
+        const key = firstH1.toLowerCase();
+        if (!h1Map.has(key)) h1Map.set(key, []);
+        h1Map.get(key)!.push(page.url);
+      }
+      const dupCanon = page.result.checks?.find((c) => c.id === "duplicate-canonical" && c.status === "fail");
+      if (dupCanon) multipleCanonicalPages.push(page.url);
+    }
+
+    const duplicateTitles = [...titleMap.entries()]
+      .filter(([, urls]) => urls.length > 1)
+      .map(([text, urls]) => ({ text, count: urls.length, urls }));
+
+    const duplicateDescriptions = [...descMap.entries()]
+      .filter(([, urls]) => urls.length > 1)
+      .map(([text, urls]) => ({ text, count: urls.length, urls }));
+
+    const duplicateH1s = [...h1Map.entries()]
+      .filter(([, urls]) => urls.length > 1)
+      .map(([text, urls]) => ({ text, count: urls.length, urls }));
+
+    const totalDuplicatePages = new Set([
+      ...duplicateTitles.flatMap((d) => d.urls),
+      ...duplicateDescriptions.flatMap((d) => d.urls),
+      ...duplicateH1s.flatMap((d) => d.urls),
+      ...multipleCanonicalPages,
+    ]).size;
+
+    return {
+      duplicateTitles,
+      duplicateDescriptions,
+      duplicateH1s,
+      multipleCanonicalPages,
+      totalDuplicatePages,
+      totalGroups: duplicateTitles.length + duplicateDescriptions.length + duplicateH1s.length + multipleCanonicalPages.length,
+    };
+  }, [completed]);
+
+  // Site-Wide Missing Elements Analysis
+  const missingsAnalysis = useMemo(() => {
+    const missingTitles: string[] = [];
+    const missingDescriptions: string[] = [];
+    const missingH1s: string[] = [];
+    const missingCanonicals: string[] = [];
+    const missingAlts: { url: string; count: number }[] = [];
+    const missingRobotsMeta: string[] = [];
+    const missingSchemas: string[] = [];
+    const missingAuthorPublishers: string[] = [];
+
+    for (const page of completed) {
+      if (!page.result) continue;
+      if (!page.result.title || !page.result.title.trim()) {
+        missingTitles.push(page.url);
+      }
+      if (!page.result.description || !page.result.description.trim()) {
+        missingDescriptions.push(page.url);
+      }
+      const hasH1 = page.result.headings?.some((h) => h.level === 1 && h.text.trim());
+      if (!hasH1) {
+        missingH1s.push(page.url);
+      }
+      const canonicalCheck = page.result.checks?.find((c) => c.id === "canonical");
+      if (!canonicalCheck || canonicalCheck.status === "fail") {
+        missingCanonicals.push(page.url);
+      }
+      const altCheck = page.result.checks?.find((c) => c.id === "img-alt");
+      if (altCheck && altCheck.status === "warn") {
+        const missingCount = page.result.images?.filter((i) => !i.alt).length || 1;
+        missingAlts.push({ url: page.url, count: missingCount });
+      }
+      const robotsCheck = page.result.checks?.find((c) => c.id === "robots-meta");
+      if (robotsCheck && (robotsCheck.status === "warn" || robotsCheck.detail.includes("not defined"))) {
+        missingRobotsMeta.push(page.url);
+      }
+      if (!page.result.schema || page.result.schema.length === 0) {
+        missingSchemas.push(page.url);
+      }
+      const authorCheck = page.result.checks?.find((c) => c.id === "author-publisher");
+      if (authorCheck && authorCheck.status === "warn") {
+        missingAuthorPublishers.push(page.url);
+      }
+    }
+
+    const totalMissingPages = new Set([
+      ...missingTitles,
+      ...missingDescriptions,
+      ...missingH1s,
+      ...missingCanonicals,
+      ...missingAlts.map((a) => a.url),
+      ...missingRobotsMeta,
+      ...missingSchemas,
+      ...missingAuthorPublishers,
+    ]).size;
+
+    return {
+      missingTitles,
+      missingDescriptions,
+      missingH1s,
+      missingCanonicals,
+      missingAlts,
+      missingRobotsMeta,
+      missingSchemas,
+      missingAuthorPublishers,
+      totalMissingPages,
+    };
+  }, [completed]);
+
+  const filtered = useMemo(() => {
+    if (filter === "completed") return pages.filter((p) => p.status === "completed");
+    if (filter === "failed") return pages.filter((p) => p.status === "failed");
+    if (filter === "warnings") return pages.filter((p) => p.result && p.result.score < 80);
+    return pages;
+  }, [pages, filter]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedPages = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, safeCurrentPage, pageSize]);
+
+  const avgScore = useMemo(() => {
+    return completed.length > 0
+      ? Math.round(completed.reduce((sum, p) => sum + (p.result?.score || 0), 0) / completed.length)
+      : 0;
+  }, [completed]);
 
   const safeName = baseUrl.replace(/^https?:\/\//, "").replace(/[^a-z0-9]/gi, "_");
-  const urlExportRows = [
+
+  const getUrlExportRows = (): string[][] => [
     ["URL", "Score", "Page title", "Result", "Issue count"],
     ...pages.map((page) => [
       page.url,
@@ -86,25 +234,27 @@ export function CrawlResultsView({
   ];
 
   // Build issue-centric data: group by check ID across all completed pages
-  const issueMap = new Map<string, { check: CheckResult; urls: string[] }>();
-  for (const page of completed) {
-    if (!page.result) continue;
-    for (const check of page.result.checks || []) {
-      if (check.status === "fail" || check.status === "warn") {
-        const key = check.id;
-        if (!issueMap.has(key)) {
-          issueMap.set(key, { check, urls: [] });
+  const issues = useMemo(() => {
+    const issueMap = new Map<string, { check: CheckResult; urls: string[] }>();
+    for (const page of completed) {
+      if (!page.result) continue;
+      for (const check of page.result.checks || []) {
+        if (check.status === "fail" || check.status === "warn") {
+          const key = check.id;
+          if (!issueMap.has(key)) {
+            issueMap.set(key, { check, urls: [] });
+          }
+          issueMap.get(key)!.urls.push(page.url);
         }
-        issueMap.get(key)!.urls.push(page.url);
       }
     }
-  }
-  const issues = Array.from(issueMap.values()).sort((a, b) => {
-    const order = { fail: 0, warn: 1, info: 2, pass: 3 };
-    const statusDiff = order[a.check.status] - order[b.check.status];
-    if (statusDiff !== 0) return statusDiff;
-    return b.urls.length - a.urls.length;
-  });
+    return Array.from(issueMap.values()).sort((a, b) => {
+      const order = { fail: 0, warn: 1, info: 2, pass: 3 };
+      const statusDiff = order[a.check.status] - order[b.check.status];
+      if (statusDiff !== 0) return statusDiff;
+      return b.urls.length - a.urls.length;
+    });
+  }, [completed]);
 
   const getIssueExportRows = (): string[][] => [
     ["Issue", "Status", "Category", "What it means", "How to fix", "Affected URL"],
@@ -113,10 +263,61 @@ export function CrawlResultsView({
       return issueUrls.map((url) => [check.label, check.status, check.category, guidance.explanation, guidance.fix, url]);
     }),
   ];
+
+  const getDuplicateMissingExportRows = (): string[][] => {
+    const rows: string[][] = [
+      ["Type", "Issue", "Severity", "Value / Detail", "Occurrences", "Affected URL"],
+    ];
+    for (const item of duplicatesAnalysis.duplicateTitles) {
+      for (const u of item.urls) rows.push(["Duplicate", "Duplicate Title Tag", "Error", item.text, String(item.count), u]);
+    }
+    for (const item of duplicatesAnalysis.duplicateDescriptions) {
+      for (const u of item.urls) rows.push(["Duplicate", "Duplicate Meta Description", "Warning", item.text, String(item.count), u]);
+    }
+    for (const item of duplicatesAnalysis.duplicateH1s) {
+      for (const u of item.urls) rows.push(["Duplicate", "Duplicate H1 Heading", "Warning", item.text, String(item.count), u]);
+    }
+    for (const u of duplicatesAnalysis.multipleCanonicalPages) {
+      rows.push(["Duplicate", "Multiple Canonical Tags", "Error", "Multiple canonical tags defined", "1", u]);
+    }
+    for (const u of missingsAnalysis.missingTitles) {
+      rows.push(["Missing", "Missing Title Tag", "Error", "Page has no <title> tag", "1", u]);
+    }
+    for (const u of missingsAnalysis.missingDescriptions) {
+      rows.push(["Missing", "Missing Meta Description", "Warning", "Page has no meta description", "1", u]);
+    }
+    for (const u of missingsAnalysis.missingH1s) {
+      rows.push(["Missing", "Missing H1 Heading", "Error", "Page has no H1 heading", "1", u]);
+    }
+    for (const u of missingsAnalysis.missingCanonicals) {
+      rows.push(["Missing", "Missing Canonical Tag", "Error", "Page has no canonical tag", "1", u]);
+    }
+    for (const item of missingsAnalysis.missingAlts) {
+      rows.push(["Missing", "Missing Image Alt Text", "Warning", `${item.count} images missing alt`, String(item.count), item.url]);
+    }
+    for (const u of missingsAnalysis.missingRobotsMeta) {
+      rows.push(["Missing", "Missing Robots Meta Tag", "Notice", "Robots meta tag not defined", "1", u]);
+    }
+    for (const u of missingsAnalysis.missingSchemas) {
+      rows.push(["Missing", "Missing Structured Data", "Notice", "No Schema.org markup found", "1", u]);
+    }
+    for (const u of missingsAnalysis.missingAuthorPublishers) {
+      rows.push(["Missing", "Missing E-E-A-T Attribution", "Notice", "Author/publisher missing", "1", u]);
+    }
+    return rows;
+  };
+
   const handleExportCsv = () => downloadCsv(`seo-audit_${safeName}.csv`, generateCrawlCsv(pages));
-  const handleExportExcel = () => downloadExcel(`seo-audit_${safeName}.xls`, urlExportRows);
+  const handleExportExcel = () => downloadExcel(`seo-audit_${safeName}.xls`, getUrlExportRows());
   const handleIssueExportCsv = () => downloadCsv(`seo-issues_${safeName}.csv`, generateIssueCsv(getIssueExportRows()));
   const handleIssueExportExcel = () => downloadExcel(`seo-issues_${safeName}.xls`, getIssueExportRows());
+  const handleDuplicateMissingExportCsv = () => downloadCsv(`seo-duplicates-missing_${safeName}.csv`, generateDuplicateMissingCsv(getDuplicateMissingExportRows()));
+  const handleDuplicateMissingExportExcel = () => downloadExcel(`seo-duplicates-missing_${safeName}.xls`, getDuplicateMissingExportRows());
+
+  const handleFilterChange = (newFilter: "all" | "completed" | "failed" | "warnings") => {
+    setFilter(newFilter);
+    setCurrentPage(1);
+  };
 
   return (
     <div className="space-y-4">
@@ -173,15 +374,27 @@ export function CrawlResultsView({
             </div>
           )}
           <button
-            onClick={viewMode === "issues" ? handleIssueExportCsv : handleExportCsv}
+            onClick={
+              viewMode === "duplicates-missing"
+                ? handleDuplicateMissingExportCsv
+                : viewMode === "issues"
+                ? handleIssueExportCsv
+                : handleExportCsv
+            }
             disabled={completed.length === 0}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
           >
             <Download className="w-4 h-4" />
-            {viewMode === "issues" ? "Issues CSV" : "URLs CSV"}
+            {viewMode === "duplicates-missing" ? "Dup & Miss CSV" : viewMode === "issues" ? "Issues CSV" : "URLs CSV"}
           </button>
           <button
-            onClick={viewMode === "issues" ? handleIssueExportExcel : handleExportExcel}
+            onClick={
+              viewMode === "duplicates-missing"
+                ? handleDuplicateMissingExportExcel
+                : viewMode === "issues"
+                ? handleIssueExportExcel
+                : handleExportExcel
+            }
             disabled={completed.length === 0}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
           >
@@ -210,6 +423,57 @@ export function CrawlResultsView({
         </div>
       )}
 
+      {/* SEMrush Domain Crawl Health Banner */}
+      {completed.length > 0 && (
+        <div className="p-5 sm:p-6 rounded-3xl bg-gradient-to-br from-slate-950 via-[#111322] to-[#1c1836] text-white border border-slate-800/80 shadow-lg flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex items-center gap-5">
+            <ScoreGauge score={avgScore} size={110} />
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-orange-500 text-white">
+                  SEMrush Domain Health
+                </span>
+                <span className="text-[10px] font-bold text-slate-300">
+                  {completed.length} / {pages.length} Pages Audited
+                </span>
+              </div>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-3xl font-black text-white">{avgScore}</span>
+                <span className="text-slate-400 text-xs font-bold">/100 Average Health Score</span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Audited across {issues.length} distinct technical issue categories
+              </p>
+            </div>
+          </div>
+
+          {/* Benchmark */}
+          <div className="w-full md:w-64 p-3.5 rounded-2xl bg-white/5 border border-white/10 text-xs space-y-2">
+            <div className="flex justify-between text-slate-300 font-bold">
+              <span>Competitive Benchmark</span>
+            </div>
+            <div>
+              <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+                <span>Top 10% Sites</span>
+                <span className="text-emerald-400 font-bold">92%</span>
+              </div>
+              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                <div className="bg-emerald-500 h-full rounded-full" style={{ width: "92%" }} />
+              </div>
+            </div>
+            <div>
+              <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+                <span>This Domain</span>
+                <span className="text-orange-400 font-bold">{avgScore}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                <div className="bg-orange-500 h-full rounded-full" style={{ width: `${avgScore}%` }} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatBox label="Completed" value={completed.length} icon={<CheckCircle2 className="w-4 h-4 text-emerald-500" />} />
@@ -218,7 +482,7 @@ export function CrawlResultsView({
         <StatBox label="Issues Found" value={issues.length} icon={<AlertTriangle className="w-4 h-4 text-orange-500" />} />
       </div>
 
-      {/* View mode toggle: URLs vs Issues */}
+      {/* View mode toggle: URLs vs Issues vs Duplicates & Missing */}
       <div className="flex items-center gap-2">
         <div className="flex gap-1 p-1 bg-slate-100 rounded-lg">
           <button
@@ -228,7 +492,7 @@ export function CrawlResultsView({
             }`}
           >
             <Link2 className="w-3.5 h-3.5" />
-            By URL
+            By URL ({pages.length})
           </button>
           <button
             onClick={() => setViewMode("issues")}
@@ -238,6 +502,15 @@ export function CrawlResultsView({
           >
             <ListFilter className="w-3.5 h-3.5" />
             By Issue ({issues.length})
+          </button>
+          <button
+            onClick={() => setViewMode("duplicates-missing")}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+              viewMode === "duplicates-missing" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            <Copy className="w-3.5 h-3.5" />
+            Duplicates & Missing ({duplicatesAnalysis.totalDuplicatePages + missingsAnalysis.totalMissingPages})
           </button>
         </div>
       </div>
@@ -255,7 +528,7 @@ export function CrawlResultsView({
             ] as const).map(([key, label]) => (
               <button
                 key={key}
-                onClick={() => setFilter(key)}
+                onClick={() => handleFilterChange(key)}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                   filter === key ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 }`}
@@ -272,7 +545,7 @@ export function CrawlResultsView({
                 {isCrawling ? "Waiting for results..." : "No pages match this filter."}
               </div>
             )}
-            {filtered.map((page) => {
+            {paginatedPages.map((page) => {
               const isExpanded = expandedUrl === page.url;
               const sc = page.result ? scoreColor(page.result.score) : null;
               const validatorUrl = `https://validator.schema.org/#url=${encodeURIComponent(page.url)}`;
@@ -344,6 +617,61 @@ export function CrawlResultsView({
               );
             })}
           </div>
+
+          {/* Pagination Controls */}
+          {filtered.length > 0 && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-100 text-xs text-slate-500">
+              <div className="flex items-center gap-2">
+                <span>
+                  Showing {Math.min((safeCurrentPage - 1) * pageSize + 1, filtered.length)}–
+                  {Math.min(safeCurrentPage * pageSize, filtered.length)} of {filtered.length} pages
+                </span>
+                <span className="text-slate-300">|</span>
+                <span className="flex items-center gap-1.5">
+                  Per page:
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="bg-white border border-slate-200 rounded-md px-1.5 py-0.5 text-xs text-slate-700 outline-none cursor-pointer focus:border-blue-500"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={500}>All (500)</option>
+                  </select>
+                </span>
+              </div>
+
+              {totalPages > 1 && (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={safeCurrentPage <= 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                    title="Previous page"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <span className="font-semibold text-slate-700 px-2">
+                    Page {safeCurrentPage} of {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safeCurrentPage >= totalPages}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                    title="Next page"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
 
@@ -383,9 +711,27 @@ export function CrawlResultsView({
                     </div>
                     <p className="text-xs text-slate-400 truncate mt-0.5">{guidanceFor(check).explanation}</p>
                   </div>
-                  <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-600 bg-slate-100 px-2 py-1 rounded-lg flex-shrink-0">
-                    {issueUrls.length} URL{issueUrls.length !== 1 ? "s" : ""}
-                  </span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">
+                      {issueUrls.length} URL{issueUrls.length !== 1 ? "s" : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFixBottleneck({
+                          check,
+                          guidance: getIssueGuidance(check),
+                          affectedUrls: issueUrls,
+                          severity: check.status === "fail" ? "error" : "warning",
+                        });
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                    >
+                      <Wrench className="w-3 h-3" />
+                      <span>Why & Fix</span>
+                    </button>
+                  </div>
                 </button>
 
                 {isExpanded && (
@@ -422,6 +768,1033 @@ export function CrawlResultsView({
           })}
         </div>
       )}
+
+      {/* Duplicates & Missing View */}
+      {viewMode === "duplicates-missing" && (
+        <div className="space-y-4">
+          {/* SEMrush Duplicate & Missing Metric Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold text-slate-500">Duplicate Titles</span>
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${duplicatesAnalysis.duplicateTitles.length > 0 ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                  {duplicatesAnalysis.duplicateTitles.length > 0 ? "Error" : "Clean"}
+                </span>
+              </div>
+              <p className="text-2xl font-black text-slate-900">{duplicatesAnalysis.duplicateTitles.length}</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">{duplicatesAnalysis.duplicateTitles.reduce((a, b) => a + b.count, 0)} pages affected</p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold text-slate-500">Duplicate Descriptions</span>
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${duplicatesAnalysis.duplicateDescriptions.length > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                  {duplicatesAnalysis.duplicateDescriptions.length > 0 ? "Warning" : "Clean"}
+                </span>
+              </div>
+              <p className="text-2xl font-black text-slate-900">{duplicatesAnalysis.duplicateDescriptions.length}</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">{duplicatesAnalysis.duplicateDescriptions.reduce((a, b) => a + b.count, 0)} pages affected</p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold text-slate-500">Missing Titles</span>
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${missingsAnalysis.missingTitles.length > 0 ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                  {missingsAnalysis.missingTitles.length > 0 ? "Critical" : "Clean"}
+                </span>
+              </div>
+              <p className="text-2xl font-black text-slate-900">{missingsAnalysis.missingTitles.length}</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Pages without &lt;title&gt;</p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold text-slate-500">Missing Descriptions</span>
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${missingsAnalysis.missingDescriptions.length > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                  {missingsAnalysis.missingDescriptions.length > 0 ? "Warning" : "Clean"}
+                </span>
+              </div>
+              <p className="text-2xl font-black text-slate-900">{missingsAnalysis.missingDescriptions.length}</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Pages without meta desc</p>
+            </div>
+          </div>
+
+          {/* Subfilter buttons */}
+          <div className="flex gap-1 p-1 bg-slate-100 rounded-lg w-fit">
+            <button
+              onClick={() => setDupMissFilter("all")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                dupMissFilter === "all" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              All Duplicates & Missing ({duplicatesAnalysis.totalDuplicatePages + missingsAnalysis.totalMissingPages})
+            </button>
+            <button
+              onClick={() => setDupMissFilter("duplicates")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                dupMissFilter === "duplicates" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              Duplicates ({duplicatesAnalysis.totalDuplicatePages})
+            </button>
+            <button
+              onClick={() => setDupMissFilter("missing")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                dupMissFilter === "missing" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              Missing ({missingsAnalysis.totalMissingPages})
+            </button>
+          </div>
+
+          {/* List of items */}
+          <div className="space-y-3">
+            {/* Duplicates Section */}
+            {(dupMissFilter === "all" || dupMissFilter === "duplicates") && (
+              <>
+                {/* Duplicate Titles */}
+                {duplicatesAnalysis.duplicateTitles.map((item, idx) => {
+                  const key = `dup-title-${idx}`;
+                  const isExpanded = expandedDupGroup === key;
+                  return (
+                    <div key={key} className="rounded-xl border border-rose-200 bg-white overflow-hidden shadow-xs">
+                      <div
+                        onClick={() => setExpandedDupGroup(isExpanded ? null : key)}
+                        className="flex items-center justify-between p-3.5 hover:bg-rose-50/50 cursor-pointer transition"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {isExpanded ? <ChevronDown className="w-4 h-4 text-rose-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                                Duplicate Title
+                              </span>
+                              <span className="text-xs font-bold text-slate-700 truncate">
+                                "{item.text}"
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              Shared across {item.count} pages. Canonicalization / ranking cannibalization risk.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                            {item.count} Pages
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const dummyCheck: CheckResult = {
+                                id: "duplicate-title",
+                                label: "Duplicate Title Tags",
+                                category: "on-page",
+                                status: "fail",
+                                detail: `Title "${item.text}" is duplicated on ${item.count} pages.`,
+                              };
+                              setFixBottleneck({
+                                check: dummyCheck,
+                                guidance: getIssueGuidance(dummyCheck),
+                                affectedUrls: item.urls,
+                                severity: "error",
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                          >
+                            <Wrench className="w-3 h-3" />
+                            <span>Why & Fix</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="border-t border-rose-100 bg-rose-50/30 p-3.5 space-y-2">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs font-bold text-slate-600">Affected URLs ({item.urls.length})</span>
+                            <CopyButton text={item.urls.join("\n")} />
+                          </div>
+                          <div className="space-y-1.5">
+                            {item.urls.map((u) => (
+                              <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                                <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                  {u}
+                                </a>
+                                <CopyButton text={u} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Duplicate Descriptions */}
+                {duplicatesAnalysis.duplicateDescriptions.map((item, idx) => {
+                  const key = `dup-desc-${idx}`;
+                  const isExpanded = expandedDupGroup === key;
+                  return (
+                    <div key={key} className="rounded-xl border border-amber-200 bg-white overflow-hidden shadow-xs">
+                      <div
+                        onClick={() => setExpandedDupGroup(isExpanded ? null : key)}
+                        className="flex items-center justify-between p-3.5 hover:bg-amber-50/50 cursor-pointer transition"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {isExpanded ? <ChevronDown className="w-4 h-4 text-amber-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                                Duplicate Description
+                              </span>
+                              <span className="text-xs font-bold text-slate-700 truncate">
+                                "{item.text}"
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              Shared across {item.count} pages. Lowers search snippet uniqueness.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                            {item.count} Pages
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const dummyCheck: CheckResult = {
+                                id: "duplicate-meta-description",
+                                label: "Duplicate Meta Descriptions",
+                                category: "on-page",
+                                status: "warn",
+                                detail: `Meta description is duplicated on ${item.count} pages.`,
+                              };
+                              setFixBottleneck({
+                                check: dummyCheck,
+                                guidance: getIssueGuidance(dummyCheck),
+                                affectedUrls: item.urls,
+                                severity: "warning",
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                          >
+                            <Wrench className="w-3 h-3" />
+                            <span>Why & Fix</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="border-t border-amber-100 bg-amber-50/30 p-3.5 space-y-2">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs font-bold text-slate-600">Affected URLs ({item.urls.length})</span>
+                            <CopyButton text={item.urls.join("\n")} />
+                          </div>
+                          <div className="space-y-1.5">
+                            {item.urls.map((u) => (
+                              <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                                <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                  {u}
+                                </a>
+                                <CopyButton text={u} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Duplicate H1s */}
+                {duplicatesAnalysis.duplicateH1s.map((item, idx) => {
+                  const key = `dup-h1-${idx}`;
+                  const isExpanded = expandedDupGroup === key;
+                  return (
+                    <div key={key} className="rounded-xl border border-amber-200 bg-white overflow-hidden shadow-xs">
+                      <div
+                        onClick={() => setExpandedDupGroup(isExpanded ? null : key)}
+                        className="flex items-center justify-between p-3.5 hover:bg-amber-50/50 cursor-pointer transition"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {isExpanded ? <ChevronDown className="w-4 h-4 text-amber-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                                Duplicate H1 Heading
+                              </span>
+                              <span className="text-xs font-bold text-slate-700 truncate">
+                                "{item.text}"
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              Shared across {item.count} pages. Topic hierarchy dilution.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                            {item.count} Pages
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const dummyCheck: CheckResult = {
+                                id: "duplicate-h1",
+                                label: "Duplicate H1 Headings",
+                                category: "on-page",
+                                status: "warn",
+                                detail: `H1 heading is duplicated on ${item.count} pages.`,
+                              };
+                              setFixBottleneck({
+                                check: dummyCheck,
+                                guidance: getIssueGuidance(dummyCheck),
+                                affectedUrls: item.urls,
+                                severity: "warning",
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                          >
+                            <Wrench className="w-3 h-3" />
+                            <span>Why & Fix</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="border-t border-amber-100 bg-amber-50/30 p-3.5 space-y-2">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs font-bold text-slate-600">Affected URLs ({item.urls.length})</span>
+                            <CopyButton text={item.urls.join("\n")} />
+                          </div>
+                          <div className="space-y-1.5">
+                            {item.urls.map((u) => (
+                              <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                                <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                  {u}
+                                </a>
+                                <CopyButton text={u} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Multiple Canonical Tags */}
+                {duplicatesAnalysis.multipleCanonicalPages.length > 0 && (
+                  <div className="rounded-xl border border-rose-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedDupGroup(expandedDupGroup === "dup-canon" ? null : "dup-canon")}
+                      className="flex items-center justify-between p-3.5 hover:bg-rose-50/50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedDupGroup === "dup-canon" ? <ChevronDown className="w-4 h-4 text-rose-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                              Multiple Canonical Tags
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Conflicting canonical declarations
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Search engines ignore all canonical declarations when multiples exist.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {duplicatesAnalysis.multipleCanonicalPages.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "duplicate-canonical",
+                              label: "Multiple Canonical Tags",
+                              category: "technical",
+                              status: "fail",
+                              detail: "Multiple canonical tags detected on this page.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: duplicatesAnalysis.multipleCanonicalPages,
+                              severity: "error",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedDupGroup === "dup-canon" && (
+                      <div className="border-t border-rose-100 bg-rose-50/30 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({duplicatesAnalysis.multipleCanonicalPages.length})</span>
+                          <CopyButton text={duplicatesAnalysis.multipleCanonicalPages.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {duplicatesAnalysis.multipleCanonicalPages.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Missings Section */}
+            {(dupMissFilter === "all" || dupMissFilter === "missing") && (
+              <>
+                {/* Missing Titles */}
+                {missingsAnalysis.missingTitles.length > 0 && (
+                  <div className="rounded-xl border border-rose-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-title" ? null : "miss-title")}
+                      className="flex items-center justify-between p-3.5 hover:bg-rose-50/50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-title" ? <ChevronDown className="w-4 h-4 text-rose-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                              Missing Title Tag
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages with no &lt;title&gt; element
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Critical ranking signal. Google will generate arbitrary or empty search headlines.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingTitles.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "title",
+                              label: "Title Tag",
+                              category: "on-page",
+                              status: "fail",
+                              detail: "Missing <title> tag.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingTitles,
+                              severity: "error",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-title" && (
+                      <div className="border-t border-rose-100 bg-rose-50/30 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingTitles.length})</span>
+                          <CopyButton text={missingsAnalysis.missingTitles.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingTitles.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Missing Meta Descriptions */}
+                {missingsAnalysis.missingDescriptions.length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-desc" ? null : "miss-desc")}
+                      className="flex items-center justify-between p-3.5 hover:bg-amber-50/50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-desc" ? <ChevronDown className="w-4 h-4 text-amber-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                              Missing Meta Description
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages with no &lt;meta name="description"&gt;
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Missed organic CTR opportunity. Google extracts random page snippets.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingDescriptions.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "meta-description",
+                              label: "Meta Description",
+                              category: "on-page",
+                              status: "warn",
+                              detail: "Missing meta description.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingDescriptions,
+                              severity: "warning",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-desc" && (
+                      <div className="border-t border-amber-100 bg-amber-50/30 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingDescriptions.length})</span>
+                          <CopyButton text={missingsAnalysis.missingDescriptions.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingDescriptions.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Missing H1 Headings */}
+                {missingsAnalysis.missingH1s.length > 0 && (
+                  <div className="rounded-xl border border-rose-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-h1" ? null : "miss-h1")}
+                      className="flex items-center justify-between p-3.5 hover:bg-rose-50/50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-h1" ? <ChevronDown className="w-4 h-4 text-rose-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                              Missing H1 Heading
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages with no primary &lt;h1&gt;
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Search crawlers cannot identify primary topic hierarchy.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingH1s.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "h1",
+                              label: "Single H1 Heading",
+                              category: "on-page",
+                              status: "fail",
+                              detail: "No H1 tag found.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingH1s,
+                              severity: "error",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-h1" && (
+                      <div className="border-t border-rose-100 bg-rose-50/30 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingH1s.length})</span>
+                          <CopyButton text={missingsAnalysis.missingH1s.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingH1s.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Missing Canonicals */}
+                {missingsAnalysis.missingCanonicals.length > 0 && (
+                  <div className="rounded-xl border border-rose-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-canon" ? null : "miss-canon")}
+                      className="flex items-center justify-between p-3.5 hover:bg-rose-50/50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-canon" ? <ChevronDown className="w-4 h-4 text-rose-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                              Missing Canonical Tag
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages without self-referencing canonical
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Leaves URLs vulnerable to duplicate indexing across protocol, www, and query params.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingCanonicals.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "canonical",
+                              label: "Canonical URL",
+                              category: "technical",
+                              status: "fail",
+                              detail: "Canonical URL is missing.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingCanonicals,
+                              severity: "error",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-canon" && (
+                      <div className="border-t border-rose-100 bg-rose-50/30 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingCanonicals.length})</span>
+                          <CopyButton text={missingsAnalysis.missingCanonicals.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingCanonicals.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Missing Image Alt Text */}
+                {missingsAnalysis.missingAlts.length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-alt" ? null : "miss-alt")}
+                      className="flex items-center justify-between p-3.5 hover:bg-amber-50/50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-alt" ? <ChevronDown className="w-4 h-4 text-amber-500" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                              Missing Image Alt Text
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages with images lacking alt attributes
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Harms visual accessibility and image search discovery.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingAlts.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "img-alt",
+                              label: "Image Alt Text",
+                              category: "on-page",
+                              status: "warn",
+                              detail: "Images are missing alt text.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingAlts.map((a) => a.url),
+                              severity: "warning",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-alt" && (
+                      <div className="border-t border-amber-100 bg-amber-50/30 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingAlts.length})</span>
+                          <CopyButton text={missingsAnalysis.missingAlts.map((a) => a.url).join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingAlts.map((item) => (
+                            <div key={item.url} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {item.url}
+                              </a>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-amber-600 font-bold px-1.5 py-0.5 rounded bg-amber-50">
+                                  {item.count} images missing alt
+                                </span>
+                                <CopyButton text={item.url} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Missing Robots Meta */}
+                {missingsAnalysis.missingRobotsMeta.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-robots" ? null : "miss-robots")}
+                      className="flex items-center justify-between p-3.5 hover:bg-slate-50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-robots" ? <ChevronDown className="w-4 h-4 text-slate-600" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
+                              Missing Robots Meta Tag
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages without explicit &lt;meta name="robots"&gt;
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Recommended to explicitly declare index, follow, max-image-preview:large.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingRobotsMeta.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "robots-meta",
+                              label: "Robots Meta Tag",
+                              category: "technical",
+                              status: "warn",
+                              detail: "Robots meta tag is not defined.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingRobotsMeta,
+                              severity: "notice",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-robots" && (
+                      <div className="border-t border-slate-100 bg-slate-50/50 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingRobotsMeta.length})</span>
+                          <CopyButton text={missingsAnalysis.missingRobotsMeta.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingRobotsMeta.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Missing Schema Structured Data */}
+                {missingsAnalysis.missingSchemas.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-schema" ? null : "miss-schema")}
+                      className="flex items-center justify-between p-3.5 hover:bg-slate-50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-schema" ? <ChevronDown className="w-4 h-4 text-slate-600" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
+                              Missing Structured Data
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages without Schema.org JSON-LD
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Reduces rich snippet eligibility in Google SERPs.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingSchemas.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "structured-data",
+                              label: "Structured Data (Schema)",
+                              category: "technical",
+                              status: "warn",
+                              detail: "No structured data found.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingSchemas,
+                              severity: "notice",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-schema" && (
+                      <div className="border-t border-slate-100 bg-slate-50/50 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingSchemas.length})</span>
+                          <CopyButton text={missingsAnalysis.missingSchemas.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingSchemas.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Missing Author / Publisher Attribution */}
+                {missingsAnalysis.missingAuthorPublishers.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+                    <div
+                      onClick={() => setExpandedMissKey(expandedMissKey === "miss-author" ? null : "miss-author")}
+                      className="flex items-center justify-between p-3.5 hover:bg-slate-50 cursor-pointer transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {expandedMissKey === "miss-author" ? <ChevronDown className="w-4 h-4 text-slate-600" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
+                              Missing E-E-A-T Attribution
+                            </span>
+                            <span className="text-xs font-bold text-slate-700">
+                              Pages without author or publisher meta
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Author attribution strengthens Google Experience, Expertise, Authoritativeness trust signals.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                          {missingsAnalysis.missingAuthorPublishers.length} Pages
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const dummyCheck: CheckResult = {
+                              id: "author-publisher",
+                              label: "Author & Publisher Attribution",
+                              category: "on-page",
+                              status: "warn",
+                              detail: "Author and publisher metadata are missing.",
+                            };
+                            setFixBottleneck({
+                              check: dummyCheck,
+                              guidance: getIssueGuidance(dummyCheck),
+                              affectedUrls: missingsAnalysis.missingAuthorPublishers,
+                              severity: "notice",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Why & Fix</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {expandedMissKey === "miss-author" && (
+                      <div className="border-t border-slate-100 bg-slate-50/50 p-3.5 space-y-2">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-slate-600">Affected URLs ({missingsAnalysis.missingAuthorPublishers.length})</span>
+                          <CopyButton text={missingsAnalysis.missingAuthorPublishers.join("\n")} />
+                        </div>
+                        <div className="space-y-1.5">
+                          {missingsAnalysis.missingAuthorPublishers.map((u) => (
+                            <div key={u} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white border border-slate-200">
+                              <a href={u} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">
+                                {u}
+                              </a>
+                              <CopyButton text={u} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* All clean state */}
+            {duplicatesAnalysis.totalDuplicatePages === 0 && missingsAnalysis.totalMissingPages === 0 && (
+              <div className="text-center py-12 p-8 rounded-2xl bg-white border border-slate-200">
+                <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+                <p className="text-base font-bold text-slate-800">100% Clean! No Duplicates or Missing Essentials</p>
+                <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                  Every audited page on this domain has unique titles, meta descriptions, H1 headings, canonical tags, and structured markup.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* SEMrush Prescriptive Fix Modal */}
+      <SemrushFixModal
+        bottleneck={fixBottleneck}
+        onClose={() => setFixBottleneck(null)}
+      />
     </div>
   );
 }

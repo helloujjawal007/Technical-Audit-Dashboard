@@ -1,21 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from "react";
 import { AlertCircle, Loader2, History, Ghost, BarChart3, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
 import { isSystemAdminUser } from "@/lib/admin";
 import { invokeEdgeFunction } from "@/lib/api";
-import { AuthPage } from "@/components/AuthPage";
 import { AuditForm } from "@/components/AuditForm";
 import { HistoryList } from "@/components/HistoryList";
 import { ResultsView } from "@/components/ResultsView";
 import { CrawlResultsView } from "@/components/CrawlResultsView";
-import { AllHistoryModal } from "@/components/AllHistoryModal";
 import { CreditDisplay } from "@/components/CreditDisplay";
 import { NavBar, type NavPage } from "@/components/NavBar";
 import { ModernScanningState } from "@/components/ModernScanningState";
 import { ReadyHeroState } from "@/components/ReadyHeroState";
-import { SiteDashboardView } from "@/components/SiteDashboardView";
-import { StealthQueueModal } from "@/components/StealthQueueModal";
 import {
   initStealthBackgroundWorker,
   enqueueStealthSite,
@@ -25,6 +21,12 @@ import {
 } from "@/lib/stealthQueue";
 import { getCreditUsage, getAllCreditUsage, recordCreditUsage, canStartAudit, getGuestCreditUsage, recordGuestCreditUsage, canStartGuestAudit } from "@/lib/credits";
 import type { AuditResult, AuditRow, AuditMode, AuditDepth, CrawlPageResult, CustomExtractionFields } from "@/types";
+
+// Code-split heavy modals and secondary views for optimal initial bundle & load time
+const AuthPage = lazy(() => import("@/components/AuthPage").then((m) => ({ default: m.AuthPage })));
+const SiteDashboardView = lazy(() => import("@/components/SiteDashboardView").then((m) => ({ default: m.SiteDashboardView })));
+const AllHistoryModal = lazy(() => import("@/components/AllHistoryModal").then((m) => ({ default: m.AllHistoryModal })));
+const StealthQueueModal = lazy(() => import("@/components/StealthQueueModal").then((m) => ({ default: m.StealthQueueModal })));
 
 function normalizeUrl(raw: string): string {
   let u = raw.trim();
@@ -95,8 +97,9 @@ function App() {
 
   useEffect(() => {
     initStealthBackgroundWorker();
-    const updateStealthCount = () => {
-      const jobs = getStealthJobs();
+    const updateStealthCount = (e?: Event) => {
+      const customEvt = e as CustomEvent<StealthJob[]> | undefined;
+      const jobs = customEvt?.detail || getStealthJobs();
       const active = jobs.filter(
         (j) => j.status === "running" || j.status === "queued" || j.status === "waiting"
       ).length;
@@ -241,8 +244,30 @@ function App() {
       if (mode === "multiple" || mode === "staging") {
         setView("crawl");
         await handleMultipleAudit(input, mode, depth);
+      } else if (mode === "single") {
+        setView("single");
+        const normalized = normalizeUrl(input);
+        const res = await auditSinglePage(normalized, undefined, depth, "single");
+        setResult(res);
+        const nowIso = new Date().toISOString();
+        setSelected({
+          id: res.auditId || "local-" + Date.now(),
+          url: normalized,
+          created_at: nowIso,
+          updated_at: nowIso,
+          status: "completed",
+          score: res.score,
+          title: res.title,
+          description: res.description,
+          checks: res.checks,
+          result_data: res,
+          error: null,
+          user_id: user?.id || null,
+          audit_type: "single",
+          audit_depth: depth,
+        });
       } else {
-        // Always perform full site audit across all pages
+        // Full crawl mode across all pages
         setView("crawl");
         await handleCrawlAudit(normalizeUrl(input), "crawl", depth);
       }
@@ -280,8 +305,8 @@ function App() {
 
     let completedCount = 0;
     let nextIndex = 0;
-    // 8 parallel workers allow up to 100 pages in under 2 minutes
-    const CONCURRENCY = 8;
+    // 12 parallel workers allow up to 100 pages in under 45-60 seconds
+    const CONCURRENCY = 12;
 
     const checkPaused = async () => {
       while (pauseRef.current && !cancelRef.current) {
@@ -296,7 +321,11 @@ function App() {
 
         const i = nextIndex++;
         const pageUrl = urls[i];
-        setCrawlPages((prev) => prev.map((p, idx) => idx === i ? { ...p, status: "running" } : p));
+        setCrawlPages((prev) => {
+          const next = prev.slice();
+          next[i] = { ...next[i], status: "running" };
+          return next;
+        });
 
         let auditId: string | undefined;
         if (user) {
@@ -316,14 +345,18 @@ function App() {
 
         try {
           const pageResult = await auditSinglePage(pageUrl, auditId, depth);
-          setCrawlPages((prev) => prev.map((p, idx) => idx === i ? {
-            ...p, status: "completed", result: pageResult, error: null,
-          } : p));
+          setCrawlPages((prev) => {
+            const next = prev.slice();
+            next[i] = { ...next[i], status: "completed", result: pageResult, error: null };
+            return next;
+          });
         } catch (e) {
           const msg = e instanceof Error ? e.message : "Audit failed";
-          setCrawlPages((prev) => prev.map((p, idx) => idx === i ? {
-            ...p, status: "failed", error: msg,
-          } : p));
+          setCrawlPages((prev) => {
+            const next = prev.slice();
+            next[i] = { ...next[i], status: "failed", error: msg };
+            return next;
+          });
         }
 
         completedCount++;
@@ -334,6 +367,98 @@ function App() {
     try {
       const workers = Array.from({ length: Math.min(CONCURRENCY, urls.length) }, () => worker());
       await Promise.all(workers);
+
+      // Cross-page duplicate analysis pass across all completed crawl results
+      setCrawlPages((currentPages) => {
+        const titleMap = new Map<string, string[]>();
+        const descMap = new Map<string, string[]>();
+        const h1Map = new Map<string, string[]>();
+
+        for (const p of currentPages) {
+          if (!p.result) continue;
+          if (p.result.title?.trim()) {
+            const k = p.result.title.trim().toLowerCase();
+            if (!titleMap.has(k)) titleMap.set(k, []);
+            titleMap.get(k)!.push(p.url);
+          }
+          if (p.result.description?.trim()) {
+            const k = p.result.description.trim().toLowerCase();
+            if (!descMap.has(k)) descMap.set(k, []);
+            descMap.get(k)!.push(p.url);
+          }
+          const h1 = p.result.headings?.find((h) => h.level === 1)?.text?.trim();
+          if (h1) {
+            const k = h1.toLowerCase();
+            if (!h1Map.has(k)) h1Map.set(k, []);
+            h1Map.get(k)!.push(p.url);
+          }
+        }
+
+        return currentPages.map((p) => {
+          if (!p.result) return p;
+          const updatedChecks = [...p.result.checks];
+
+          if (p.result.title?.trim()) {
+            const matched = titleMap.get(p.result.title.trim().toLowerCase()) || [];
+            if (matched.length > 1) {
+              const checkIdx = updatedChecks.findIndex((c) => c.id === "duplicate-title");
+              const dupCheck = {
+                id: "duplicate-title",
+                label: "Duplicate Title Tags",
+                category: "on-page" as const,
+                status: "fail" as const,
+                detail: `Title "${p.result.title}" is duplicated on ${matched.length} pages (${matched.filter((u) => u !== p.url).slice(0, 3).join(", ")}).`,
+                value: matched.join("\n"),
+              };
+              if (checkIdx >= 0) updatedChecks[checkIdx] = dupCheck;
+              else updatedChecks.push(dupCheck);
+            }
+          }
+
+          if (p.result.description?.trim()) {
+            const matched = descMap.get(p.result.description.trim().toLowerCase()) || [];
+            if (matched.length > 1) {
+              const checkIdx = updatedChecks.findIndex((c) => c.id === "duplicate-meta-description");
+              const dupCheck = {
+                id: "duplicate-meta-description",
+                label: "Duplicate Meta Descriptions",
+                category: "on-page" as const,
+                status: "warn" as const,
+                detail: `Meta description is duplicated across ${matched.length} pages on this site.`,
+                value: matched.join("\n"),
+              };
+              if (checkIdx >= 0) updatedChecks[checkIdx] = dupCheck;
+              else updatedChecks.push(dupCheck);
+            }
+          }
+
+          const firstH1 = p.result.headings?.find((h) => h.level === 1)?.text?.trim();
+          if (firstH1) {
+            const matched = h1Map.get(firstH1.toLowerCase()) || [];
+            if (matched.length > 1) {
+              const checkIdx = updatedChecks.findIndex((c) => c.id === "duplicate-h1");
+              const dupCheck = {
+                id: "duplicate-h1",
+                label: "Duplicate H1 Headings",
+                category: "on-page" as const,
+                status: "warn" as const,
+                detail: `H1 heading "${firstH1}" is duplicated across ${matched.length} pages on this site.`,
+                value: matched.join("\n"),
+              };
+              if (checkIdx >= 0) updatedChecks[checkIdx] = dupCheck;
+              else updatedChecks.push(dupCheck);
+            }
+          }
+
+          return {
+            ...p,
+            result: {
+              ...p.result,
+              checks: updatedChecks,
+            },
+          };
+        });
+      });
     } finally {
       setIsCrawling(false);
       setForegroundAuditActive(false);
@@ -598,13 +723,21 @@ function App() {
 
   if (isRecovery || (!user && !guest)) {
     return (
-      <AuthPage
-        onGuestLogin={signInAsGuest}
-        isRecoveryMode={isRecovery}
-        onRecoveryComplete={clearRecovery}
-        initialError={authUrlError}
-        onClearInitialError={clearAuthUrlError}
-      />
+      <Suspense
+        fallback={
+          <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+            <Loader2 className="w-8 h-8 text-teal-500 animate-spin" />
+          </div>
+        }
+      >
+        <AuthPage
+          onGuestLogin={signInAsGuest}
+          isRecoveryMode={isRecovery}
+          onRecoveryComplete={clearRecovery}
+          initialError={authUrlError}
+          onClearInitialError={clearAuthUrlError}
+        />
+      </Suspense>
     );
   }
 
@@ -664,20 +797,28 @@ function App() {
 
         {/* Site Dashboard Mode */}
         {activeNav === "site-dashboard" && (
-          <SiteDashboardView
-            audits={audits}
-            userId={user?.id || null}
-            onRunAudit={(targetUrl, mode, depth) => {
-              setActiveNav("audit");
-              handleAudit(targetUrl, mode, depth);
-            }}
-            onSelectAudit={(a) => {
-              handleSelect(a);
-              setActiveNav("audit");
-            }}
-            onOpenAuditStudio={() => setActiveNav("audit")}
-            initialSiteUrl={selected?.url || null}
-          />
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center py-24">
+                <Loader2 className="w-8 h-8 text-teal-500 animate-spin" />
+              </div>
+            }
+          >
+            <SiteDashboardView
+              audits={audits}
+              userId={user?.id || null}
+              onRunAudit={(targetUrl, mode, depth) => {
+                setActiveNav("audit");
+                handleAudit(targetUrl, mode, depth);
+              }}
+              onSelectAudit={(a) => {
+                handleSelect(a);
+                setActiveNav("audit");
+              }}
+              onOpenAuditStudio={() => setActiveNav("audit")}
+              initialSiteUrl={selected?.url || null}
+            />
+          </Suspense>
         )}
 
         {/* Primary Audit Studio */}
@@ -844,20 +985,26 @@ function App() {
       </main>
 
       {/* Stealth Mode Queue Modal */}
-      <StealthQueueModal
-        isOpen={stealthQueueOpen}
-        onClose={() => setStealthQueueOpen(false)}
-        onOpenReport={handleOpenStealthReport}
-      />
+      {stealthQueueOpen && (
+        <Suspense fallback={null}>
+          <StealthQueueModal
+            isOpen={stealthQueueOpen}
+            onClose={() => setStealthQueueOpen(false)}
+            onOpenReport={handleOpenStealthReport}
+          />
+        </Suspense>
+      )}
 
       {/* All History Modal Fallback */}
-      {!isGuest && (
-        <AllHistoryModal
-          open={showAllHistory}
-          onClose={() => setShowAllHistory(false)}
-          onSelect={handleSelect}
-          onDelete={handleDelete}
-        />
+      {!isGuest && showAllHistory && (
+        <Suspense fallback={null}>
+          <AllHistoryModal
+            open={showAllHistory}
+            onClose={() => setShowAllHistory(false)}
+            onSelect={handleSelect}
+            onDelete={handleDelete}
+          />
+        </Suspense>
       )}
     </div>
   );
