@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { parseHTML } from "linkedom";
+import { safeFetchWithSsrfCheck } from "./ssrfValidator";
 
 
 interface CheckResult {
@@ -153,9 +154,12 @@ function getMeta(doc: Document, selector: string, attr = "content"): string | nu
 }
 
 function stripHtml(html: string): { doc: Document; text: string } {
-  const safeHtml = html && typeof html === "string" && html.trim().length > 0
+  let safeHtml = html && typeof html === "string" && html.trim().length > 0
     ? html
     : "<!DOCTYPE html><html><head></head><body></body></html>";
+  if (!safeHtml.includes("<html") && !safeHtml.includes("<!DOCTYPE") && !safeHtml.includes("<body")) {
+    safeHtml = `<!DOCTYPE html><html><head></head><body>${safeHtml}</body></html>`;
+  }
   const { document: doc } = parseHTML(safeHtml);
   if (doc) {
     doc.querySelectorAll("script, style, noscript, template").forEach((n) => n.remove());
@@ -327,17 +331,18 @@ async function fetchSitemap(origin: string): Promise<{ content: string | null; u
   const candidates = ["/sitemap.xml", "/sitemap_index.xml"];
   for (const path of candidates) {
     try {
-      const res = await fetch(origin + path, {
+      const { response: res, finalUrl } = await safeFetchWithSsrfCheck(origin + path, {
         headers: {
           "User-Agent": "Mozilla/5.0 (compatible; ODS-AuditBot/2.0; +https://onlinedigitalsolution.com)",
           "Accept": "application/xml,text/xml,*/*",
           "Accept-Encoding": "gzip, deflate, br",
           "Connection": "keep-alive",
         },
+        signal: AbortSignal.timeout(8000),
       });
       if (res.ok) {
         const text = await res.text();
-        if (text.trim()) return { content: text, url: origin + path };
+        if (text.trim()) return { content: text, url: finalUrl || origin + path };
       }
     } catch { /* try next */ }
   }
@@ -372,16 +377,17 @@ export async function getOriginMetadata(origin: string): Promise<{
 
   const fetchPromise = (async () => {
     try {
-      // Fetch robots.txt and sitemap in parallel with keep-alive
+      // Fetch robots.txt and sitemap in parallel with safeFetchWithSsrfCheck
       const [robotsRes, sitemapData] = await Promise.all([
-        fetch(origin + "/robots.txt", {
+        safeFetchWithSsrfCheck(origin + "/robots.txt", {
           headers: {
             "User-Agent": "Mozilla/5.0 (compatible; ODS-AuditBot/2.0; +https://onlinedigitalsolution.com)",
             "Accept": "text/plain,*/*",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
           },
-        }).catch(() => null),
+          signal: AbortSignal.timeout(8000),
+        }).then((r) => r.response).catch(() => null),
         fetchSitemap(origin),
       ]);
 
@@ -436,9 +442,12 @@ function extractSitemapUrls(xml: string): string[] {
 // Fetch a sitemap URL and return its XML content
 async function fetchSitemapContent(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url, { headers: { "User-Agent": "SEO-Audit-Bot/1.0" } });
+    const { response: res } = await safeFetchWithSsrfCheck(url, {
+      headers: { "User-Agent": "SEO-Audit-Bot/1.0" },
+      signal: AbortSignal.timeout(8000),
+    });
     if (res.ok) {
- const text = await res.text();
+      const text = await res.text();
       if (text.trim()) return text;
     }
   } catch { /* ignore */ }
@@ -591,16 +600,15 @@ async function checkLinkStatus(href: string, text: string): Promise<InternalLink
   const result: InternalLinkStatus = { href, text, status: null, redirect: null, error: null };
 
   try {
-    const res = await fetch(href, {
+    const { response: res, finalUrl } = await safeFetchWithSsrfCheck(href, {
       method: "HEAD",
-      redirect: "manual",
       headers: { "User-Agent": "SEO-Audit-Bot/1.0" },
       signal: AbortSignal.timeout(8000),
     });
 
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
-      result.redirect = location ? resolveUrl(location, href) : null;
+      result.redirect = location ? resolveUrl(location, finalUrl || href) : null;
       result.status = res.status;
     } else {
       result.status = res.status;
@@ -897,7 +905,7 @@ async function discoverCustomUrls(seedUrl: string, sitemapContent: string | null
     const batch = queue.splice(0, 8);
     const discovered = await Promise.all(batch.map(async (url) => {
       try {
-        const response = await fetch(url, { headers: { "User-Agent": "SEO-Audit-Bot/1.0" }, signal: AbortSignal.timeout(7000) });
+        const { response } = await safeFetchWithSsrfCheck(url, { headers: { "User-Agent": "SEO-Audit-Bot/1.0" }, signal: AbortSignal.timeout(7000) });
         if (!response.ok) return [];
         const html = await response.text();
         const { document: doc } = parseHTML(html);
@@ -930,7 +938,7 @@ async function collectCustomAudit(urls: string[]): Promise<CustomAuditData> {
     while (nextIndex < urls.length && nextIndex < 100) {
       const url = urls[nextIndex++];
       try {
-        const response = await fetch(url, { redirect: "manual", headers: { "User-Agent": "SEO-Audit-Bot/1.0" }, signal: AbortSignal.timeout(7000) });
+        const { response } = await safeFetchWithSsrfCheck(url, { headers: { "User-Agent": "SEO-Audit-Bot/1.0" }, signal: AbortSignal.timeout(7000) });
         if (response.status >= 300 && response.status < 400) { redirects.push({ source: url, target: response.headers.get("location"), status: response.status }); continue; }
         if (!response.ok) continue;
         const html = await response.text();
@@ -1006,7 +1014,7 @@ async function auditSinglePage(
 
   try {
     const start = Date.now();
-    const res = await fetch(targetUrl, {
+    const { response: res, finalUrl } = await safeFetchWithSsrfCheck(targetUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (compatible; ODS-AuditBot/2.0)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -1014,18 +1022,18 @@ async function auditSinglePage(
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
       },
-      redirect: "follow",
+      signal: AbortSignal.timeout(15000),
     });
     responseTimeMs = Date.now() - start;
     pageStatus = res.status;
     pageOk = res.ok;
-    finalResolvedUrl = res.url || targetUrl;
+    finalResolvedUrl = finalUrl || res.url || targetUrl;
     res.headers.forEach((v, k) => { pageHeaders[k.toLowerCase()] = v; });
     pageHtml = await res.text();
     htmlSizeBytes = pageHtml.length;
 
-    // Detect Cloudflare / Bot Management Challenge Block
-    const isCloudflareBlocked = pageStatus === 403 && (
+    // Detect Cloudflare / Bot Management Challenge Block or 403/429
+    const isCloudflareBlocked = (pageStatus === 403 || pageStatus === 429) && (
       Boolean(pageHeaders["cf-ray"]) ||
       (pageHeaders["server"]?.toLowerCase().includes("cloudflare") ?? false) ||
       pageHtml.includes("cf-browser-verification") ||
@@ -1033,24 +1041,58 @@ async function auditSinglePage(
       pageHtml.includes("Just a moment...")
     );
     if (isCloudflareBlocked) {
-      throw new Error(`Target domain is protected behind Cloudflare WAF / Bot Challenge (HTTP 403). Automated crawling was restricted.`);
+      throw new Error(`Target domain is protected behind Cloudflare WAF / Bot Challenge (HTTP ${pageStatus}). Automated crawling was restricted.`);
+    }
+
+    if (pageStatus === 429) {
+      throw new Error(`Target web server rate-limited requests (HTTP 429 Too Many Requests). Crawling paused.`);
+    }
+
+    if (pageStatus === 403) {
+      throw new Error(`Target domain returned HTTP 403 Forbidden. Automated crawling was restricted by server security.`);
     }
 
     if (pageStatus === 404) {
       throw new Error(`Target page returned HTTP 404 Not Found. Please verify the URL is live.`);
     }
 
-    if (pageStatus === 502 || pageStatus === 504) {
-      throw new Error(`Gateway Error (HTTP ${pageStatus}). The target host server is unreachable or timed out.`);
+    if (pageStatus >= 500) {
+      throw new Error(`Server Error (HTTP ${pageStatus}). The target host server is unreachable or failed to respond.`);
+    }
+
+    // Huge page protection: cap at 5MB to preserve memory
+    if (htmlSizeBytes > 5 * 1024 * 1024) {
+      pageHtml = pageHtml.slice(0, 5 * 1024 * 1024);
+    }
+
+    // Non-HTML content rejection
+    const contentType = (pageHeaders["content-type"] || "").toLowerCase();
+    const isBinaryOrApi = Boolean(
+      contentType &&
+      !contentType.includes("text/html") &&
+      !contentType.includes("application/xhtml") &&
+      (contentType.includes("application/json") ||
+       contentType.includes("application/pdf") ||
+       contentType.includes("image/") ||
+       contentType.includes("audio/") ||
+       contentType.includes("video/") ||
+       contentType.includes("octet-stream")) &&
+      !pageHtml.includes("<html")
+    );
+    if (isBinaryOrApi) {
+      throw new Error(`Target URL returned non-HTML binary or API content (${contentType.split(";")[0]}). Technical audits require an HTML web page.`);
     }
   } catch (e) {
-    const raw = e instanceof Error ? e.message : "Failed to fetch URL";
-    if (raw.includes("ENOTFOUND") || raw.includes("EAI_AGAIN")) {
+    const cause = (e as { cause?: { code?: string; message?: string } })?.cause;
+    const raw = `${e instanceof Error ? e.message : ""} ${cause?.code || ""} ${cause?.message || ""}`.trim();
+    if (raw.includes("ENOTFOUND") || raw.includes("EAI_AGAIN") || raw.includes("getaddrinfo")) {
       fetchError = `DNS lookup failed for ${targetUrl}. The domain does not resolve to an IP address or is parked.`;
-    } else if (raw.includes("timeout") || raw.includes("AbortError")) {
+    } else if (raw.includes("timeout") || raw.includes("AbortError") || raw.includes("TIMEDOUT")) {
       fetchError = `Connection timed out waiting for ${targetUrl}. The web server is unresponsive.`;
+    } else if (raw.includes("CERT_") || raw.includes("TLS") || raw.includes("SSL") || raw.includes("certificate") || raw.includes("DEPTH_ZERO_SELF_SIGNED_CERT")) {
+      fetchError = `SSL/TLS handshake failure: The target server SSL certificate is expired, invalid, or untrusted.`;
     } else {
-      fetchError = raw;
+      fetchError = raw || "Failed to fetch URL";
     }
   }
 
@@ -1071,6 +1113,27 @@ async function auditSinglePage(
   }
 
   const { doc, text } = stripHtml(pageHtml);
+
+  // Parked or Inactive Domain Detection
+  const lowerHtml = pageHtml.toLowerCase();
+  const lowerTitle = (doc.querySelector("title")?.textContent || "").toLowerCase();
+  const isParked = (
+    ((lowerHtml.includes("domain is parked") ||
+      lowerHtml.includes("this domain is for sale") ||
+      lowerHtml.includes("buy this domain") ||
+      lowerHtml.includes("parked on godaddy") ||
+      lowerHtml.includes("sedoparking.com") ||
+      lowerHtml.includes("dan.com") ||
+      lowerHtml.includes("hugedomains.com") ||
+      lowerHtml.includes("parkingcrew.net")) &&
+     wordCount(text) < 120) ||
+    lowerTitle.includes("domain parked") ||
+    lowerTitle.includes("domain for sale") ||
+    lowerTitle.includes("buy this domain")
+  );
+  if (isParked) {
+    throw new Error(`Parked or inactive domain detected: This website is parked or has no published web content. A confident technical SEO audit cannot be generated.`);
+  }
 
   // Remove header/footer/nav links before link analysis
   removeHeaderFooterLinks(doc);
@@ -1446,7 +1509,7 @@ async function auditSinglePage(
   if (pageHeaders["content-encoding"] && ["gzip", "br", "deflate"].includes(pageHeaders["content-encoding"])) checks.push({ id: "compression", label: "Content Compression", category: "technical", status: "pass", detail: `Compressed with ${pageHeaders["content-encoding"]}.` });
   else { checks.push({ id: "compression", label: "Content Compression", category: "technical", status: "warn", detail: "No content encoding detected." }); recommendations.push({ priority: "low", title: "Enable Compression", detail: "No gzip/brotli compression detected." }); }
 
-  const htmlLang = doc.documentElement.getAttribute("lang");
+  const htmlLang = doc.documentElement?.getAttribute("lang") || null;
   if (htmlLang) checks.push({ id: "html-lang", label: "HTML Language", category: "technical", status: "pass", detail: `Language: ${htmlLang}` });
   else checks.push({ id: "html-lang", label: "HTML Language", category: "technical", status: "warn", detail: "No lang attribute on <html>." });
 
@@ -2398,16 +2461,40 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
     const validScores = results.map((r) => r.score).filter((s) => typeof s === "number");
     const avgScore = validScores.length > 0 ? Math.round(validScores.reduce((a, b) => a + b, 0) / validScores.length) : 0;
 
+    const duplicatesSummary = {
+      duplicateTitles: [...titleMap.entries()].filter(([, u]) => u.length > 1).map(([title, urls]) => ({ title, count: urls.length, urls })),
+      duplicateDescriptions: [...descMap.entries()].filter(([, u]) => u.length > 1).map(([description, urls]) => ({ description, count: urls.length, urls })),
+      duplicateH1s: [...h1Map.entries()].filter(([, u]) => u.length > 1).map(([h1, urls]) => ({ h1, count: urls.length, urls })),
+    };
+
+    if (mode === "outreach") {
+      const primary = results[0] || {};
+      const takeaways = generateOdTakeaways({
+        primaryResult: primary,
+        batchResults: results,
+        duplicatesSummary,
+        stagesFinished: ["crawl", "on-page", "performance", "mobile", "security", "schema", "duplicates-missing"],
+        websiteUrl: rawUrls[0],
+        companyName: typeof body.company === "string" ? body.company : undefined,
+      });
+
+      return {
+        batch: true,
+        total: rawUrls.length,
+        completed: results.length,
+        averageScore: avgScore,
+        takeaways,
+        duplicatesSummary,
+        results,
+      };
+    }
+
     return {
       batch: true,
       total: rawUrls.length,
       completed: results.length,
       averageScore: avgScore,
-      duplicatesSummary: {
-        duplicateTitles: [...titleMap.entries()].filter(([, u]) => u.length > 1).map(([title, urls]) => ({ title, count: urls.length, urls })),
-        duplicateDescriptions: [...descMap.entries()].filter(([, u]) => u.length > 1).map(([description, urls]) => ({ description, count: urls.length, urls })),
-        duplicateH1s: [...h1Map.entries()].filter(([, u]) => u.length > 1).map(([h1, urls]) => ({ h1, count: urls.length, urls })),
-      },
+      duplicatesSummary,
       results,
     };
   }
@@ -2556,5 +2643,306 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
   }
 
   return { ...result, auditId: savedAuditId };
+}
+
+// ==========================================
+// Outreach Dashboard (OD) Takeaways Generator
+// ==========================================
+
+export interface OdTakeawayItem {
+  id: string;
+  finding: string;
+  severity: "critical" | "high" | "medium";
+  metric: string;
+  sampleSize: number;
+  detail: string;
+  recommendation: string;
+}
+
+export interface OdTakeaways {
+  overallScore: number;
+  grade: "A+" | "A" | "B" | "C" | "D" | "F";
+  summaryText: string;
+  topIssues: OdTakeawayItem[];
+  stagesFinished: string[];
+  pagesAudited: number;
+  metrics: {
+    ttfbMs: number;
+    estimatedLcpSec: number;
+    clsRiskCount: number;
+    missingMetaDescCount: number;
+    missingTitlesCount: number;
+    missingH1Count: number;
+    duplicateTitlesCount: number;
+    duplicateDescCount: number;
+    schemaCount: number;
+    httpsRedirect: boolean;
+  };
+}
+
+export function generateOdTakeaways(options: {
+  primaryResult: Partial<AuditResult>;
+  batchResults?: Partial<AuditResult>[];
+  duplicatesSummary?: {
+    duplicateTitles?: { title: string; count: number; urls: string[] }[];
+    duplicateDescriptions?: { description: string; count: number; urls: string[] }[];
+    duplicateH1s?: { h1: string; count: number; urls: string[] }[];
+  };
+  stagesFinished: string[];
+  websiteUrl: string;
+  companyName?: string;
+  measuredLcpSec?: number;
+  measuredPsiScore?: number;
+}): OdTakeaways {
+  const {
+    primaryResult,
+    batchResults = [],
+    duplicatesSummary,
+    stagesFinished,
+    websiteUrl,
+    companyName = "Prospect",
+    measuredLcpSec,
+  } = options;
+
+  const pages = batchResults.length > 0 ? batchResults : [primaryResult];
+  const pagesAudited = pages.length;
+
+  const primaryTtfb = primaryResult.pageSpeed?.responseTimeMs || 0;
+  const estimatedLcpSec = primaryTtfb > 0
+    ? Number(((primaryTtfb / 1000) * 2.2 + 0.8).toFixed(1))
+    : 2.5;
+
+  let clsRiskCount = 0;
+  let missingMetaDescCount = 0;
+  let missingTitlesCount = 0;
+  let missingH1Count = 0;
+  const schemaCount = (primaryResult.schema || []).length;
+  let httpsRedirect = true;
+
+  for (const page of pages) {
+    if (!page.title || !page.title.trim()) missingTitlesCount++;
+    if (!page.description || !page.description.trim()) missingMetaDescCount++;
+    const h1Count = page.headings?.filter((h) => h.level === 1).length ?? 0;
+    if (h1Count === 0 || h1Count > 1) missingH1Count++;
+
+    const clsFail = page.checks?.some((c) => c.id === "perf-cls" && c.status === "fail");
+    if (clsFail) clsRiskCount++;
+
+    const noHttps = page.checks?.some((c) => c.id === "https" && c.status === "fail");
+    if (noHttps) httpsRedirect = false;
+  }
+
+  const duplicateTitlesCount = duplicatesSummary?.duplicateTitles?.reduce((acc, d) => acc + d.count, 0) || 0;
+  const duplicateDescCount = duplicatesSummary?.duplicateDescriptions?.reduce((acc, d) => acc + d.count, 0) || 0;
+
+  const candidates: (OdTakeawayItem & { weight: number })[] = [];
+
+  // 1. LCP (Item 1: Only send real measured LCP from PageSpeed Insights API; never send estimated LCP as hard number)
+  if (typeof measuredLcpSec === "number" && measuredLcpSec > 2.5) {
+    candidates.push({
+      id: "lcp-measured",
+      weight: 100,
+      severity: measuredLcpSec > 4.0 ? "critical" : "high",
+      finding: "Slow Largest Contentful Paint (LCP)",
+      metric: `LCP ${measuredLcpSec}s (Google PageSpeed Insights)`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: `Largest Contentful Paint took ${measuredLcpSec}s, failing Google Core Web Vitals recommended threshold of 2.5s.`,
+      recommendation: "Optimize critical rendering path, eliminate render-blocking scripts, and serve preloaded hero assets.",
+    });
+  }
+
+  // 2. TTFB (Measured hard number)
+  if (primaryTtfb > 600) {
+    candidates.push({
+      id: "ttfb-latency",
+      weight: 98,
+      severity: primaryTtfb > 1200 ? "critical" : "high",
+      finding: "Slow Server Response Time (TTFB)",
+      metric: `TTFB ${primaryTtfb}ms`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: `The origin web server took ${primaryTtfb}ms to return initial HTML bytes, failing Google TTFB guidance (under 200ms).`,
+      recommendation: "Deploy Server-Side Edge Caching (Cloudflare/Fastly) and optimize database queries to bring TTFB under 200ms.",
+    });
+  }
+
+  if (!httpsRedirect) {
+    candidates.push({
+      id: "insecure-http",
+      weight: 95,
+      severity: "critical",
+      finding: "Insecure Protocol & Lack of Automated HTTPS Enforcing",
+      metric: "no HTTPS redirect",
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "Unencrypted HTTP requests do not automatically redirect to secure HTTPS, triggering browser security warnings and diluting search authority.",
+      recommendation: "Configure automatic 301 permanent redirects from HTTP to HTTPS across all domains and enable HSTS preload headers.",
+    });
+  }
+
+  if (missingTitlesCount > 0) {
+    candidates.push({
+      id: "missing-title-tag",
+      weight: 95,
+      severity: "critical",
+      finding: "Pages Completely Missing HTML <title> Tags",
+      metric: `${missingTitlesCount} page${missingTitlesCount > 1 ? "s" : ""} missing title tag`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "Critical pages are missing HTML title tags entirely, preventing search engines from displaying an official link in search engine results.",
+      recommendation: "Immediately add unique, descriptive HTML title tags between 50-60 characters to all untagged URLs.",
+    });
+  }
+
+  if (missingMetaDescCount > 0) {
+    candidates.push({
+      id: "missing-meta-description",
+      weight: 90,
+      severity: "high",
+      finding: "Missing Meta Descriptions Across Indexed Key Pages",
+      metric: `${missingMetaDescCount} page${missingMetaDescCount > 1 ? "s" : ""} missing meta descriptions`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "Key landing pages lack custom meta descriptions, forcing Google to display arbitrary page snippets and depressing organic click-through rates.",
+      recommendation: "Write unique, keyword-rich 150-160 character meta descriptions with clear conversion calls-to-action for every page.",
+    });
+  }
+
+  if (schemaCount === 0) {
+    candidates.push({
+      id: "missing-schema-graph",
+      weight: 85,
+      severity: "high",
+      finding: "Missing Schema.org Structured Data & Semantic Knowledge Graph",
+      metric: "0 Schema.org entity graphs detected",
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "Search engines cannot programmatically associate the business name, address, services, or organization type for rich search snippets and AI answer engines.",
+      recommendation: "Inject JSON-LD structured data for Organization, LocalBusiness, and WebSite schemas with verified social and address metadata.",
+    });
+  }
+
+  // Duplicate titles (Item 1: Renamed from keyword cannibalization to duplicate title tags)
+  if (duplicateTitlesCount > 0) {
+    candidates.push({
+      id: "duplicate-titles",
+      weight: 80,
+      severity: "high",
+      finding: "Duplicate Title Tags Across Indexed Pages",
+      metric: `${duplicateTitlesCount} pages sharing duplicate title tags`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "Multiple pages share identical title tags, confusing search engine ranking algorithms and reducing click-through rates.",
+      recommendation: "Assign distinct, intent-specific title tags (50-60 characters) targeting unique search terms for every indexed URL.",
+    });
+  }
+
+  if (missingH1Count > 0) {
+    candidates.push({
+      id: "h1-hierarchy-issues",
+      weight: 75,
+      severity: "medium",
+      finding: "Improper Heading Structure & Multiple or Missing H1 Headings",
+      metric: `${missingH1Count} page${missingH1Count > 1 ? "s" : ""} with multiple or missing H1s`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "Pages have missing or multiple H1 tags, diluting keyword relevancy signals and impairing accessibility screen readers.",
+      recommendation: "Ensure each page contains exactly one primary H1 tag that encapsulates the page topic, followed by sequential H2 and H3 subheadings.",
+    });
+  }
+
+  // CLS (Item 1: Unsized image assets labeled layout shift risk, source: estimated)
+  if (clsRiskCount > 0) {
+    candidates.push({
+      id: "cls-image-dimensions",
+      weight: 70,
+      severity: "medium",
+      finding: "Unsized Image Assets (Layout Shift Risk)",
+      metric: `${clsRiskCount} image${clsRiskCount > 1 ? "s" : ""} lack width/height; can cause layout shift`,
+      sampleSize: pagesAudited,
+      source: "estimated",
+      detail: "Images are served without explicit width and height attributes or CSS aspect ratios, creating risk of sudden layout shifts while rendering.",
+      recommendation: "Specify explicit width/height HTML attributes or CSS aspect-ratio on all image wrappers to preserve layout containers.",
+    });
+  }
+
+  // Sort by weight
+  candidates.sort((a, b) => b.weight - a.weight);
+  const topIssues: OdTakeawayItem[] = candidates.slice(0, 5).map(({ id, finding, severity, metric, sampleSize, source, detail, recommendation }) => ({
+    id,
+    finding,
+    severity,
+    metric,
+    sampleSize,
+    source,
+    detail,
+    recommendation,
+  }));
+
+  // Scoring consistency (Item 7: Score must directly reflect findings; 0 findings = 98 A+ with noOpportunity)
+  let overallScore = 98;
+  if (topIssues.length > 0) {
+    const deductions = topIssues.reduce((acc, issue) => {
+      if (issue.severity === "critical") return acc + 15;
+      if (issue.severity === "high") return acc + 10;
+      return acc + 5;
+    }, 0);
+    overallScore = Math.max(35, Math.min(88, 100 - deductions));
+  }
+
+  let grade: "A+" | "A" | "B" | "C" | "D" | "F" = "F";
+  if (overallScore >= 95) grade = "A+";
+  else if (overallScore >= 88) grade = "A";
+  else if (overallScore >= 75) grade = "B";
+  else if (overallScore >= 60) grade = "C";
+  else if (overallScore >= 45) grade = "D";
+
+  const isNoOpportunity = topIssues.length === 0 || overallScore >= 95;
+
+  const metricHighlights = topIssues.length > 0
+    ? topIssues.map((t) => t.metric).join(", ")
+    : "No critical technical deficits identified";
+
+  const summaryText = isNoOpportunity
+    ? `The technical SEO audit for ${companyName} (${websiteUrl}) scored ${overallScore}/100 (Grade ${grade}). The site is technically well-optimized with no critical technical deficits. No cold outreach opportunity identified.`
+    : `The technical SEO audit for ${companyName} (${websiteUrl}) scored ${overallScore}/100 (Grade ${grade}). The analysis identified ${topIssues.length} high-impact technical bottlenecks requiring remediation: ${metricHighlights}. Addressing these issues will immediately improve Google crawl budget efficiency, Core Web Vitals compliance, and organic search conversions.`;
+
+  // Item 1: overallScore is 'computed', not 'measured'; CLS is 'estimated' risk
+  const dataSources: Record<string, "measured" | "estimated" | "computed"> = {
+    overallScore: "computed",
+    ttfb: "measured",
+    lcp: measuredLcpSec !== undefined ? "measured" : "estimated",
+    cls: "estimated",
+    metaDescriptions: "measured",
+    titles: "measured",
+    headings: "measured",
+    duplicates: "measured",
+    schema: "measured",
+    httpsRedirect: "measured",
+  };
+
+  return {
+    overallScore,
+    grade,
+    summaryText,
+    topIssues,
+    stagesFinished,
+    pagesAudited,
+    noOpportunity: isNoOpportunity,
+    dataSources,
+    metrics: {
+      ttfbMs: primaryTtfb,
+      estimatedLcpSec: measuredLcpSec !== undefined ? measuredLcpSec : estimatedLcpSec,
+      clsRiskCount,
+      missingMetaDescCount,
+      missingTitlesCount,
+      missingH1Count,
+      duplicateTitlesCount,
+      duplicateDescCount,
+      schemaCount,
+      httpsRedirect,
+    },
+  };
 }
 

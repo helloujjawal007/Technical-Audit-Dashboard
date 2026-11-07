@@ -27,6 +27,7 @@ const AuthPage = lazy(() => import("@/components/AuthPage").then((m) => ({ defau
 const SiteDashboardView = lazy(() => import("@/components/SiteDashboardView").then((m) => ({ default: m.SiteDashboardView })));
 const AllHistoryModal = lazy(() => import("@/components/AllHistoryModal").then((m) => ({ default: m.AllHistoryModal })));
 const StealthQueueModal = lazy(() => import("@/components/StealthQueueModal").then((m) => ({ default: m.StealthQueueModal })));
+const OdJobsView = lazy(() => import("@/components/OdJobsView").then((m) => ({ default: m.OdJobsView })));
 
 function normalizeUrl(raw: string): string {
   let u = raw.trim();
@@ -93,7 +94,27 @@ function App() {
   // Stealth Mode Background Queue state
   const [stealthQueueOpen, setStealthQueueOpen] = useState(false);
   const [stealthActiveCount, setStealthActiveCount] = useState(0);
+  const [odActiveCount, setOdActiveCount] = useState(0);
   const [crawlTotalDiscovered, setCrawlTotalDiscovered] = useState<number | null>(null);
+
+  useEffect(() => {
+    const checkOd = async () => {
+      try {
+        const res = await fetch("/api/od/jobs");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.stats) {
+            setOdActiveCount((data.stats.running || 0) + (data.stats.queued || 0));
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+    checkOd();
+    const interval = setInterval(checkOd, 4000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     initStealthBackgroundWorker();
@@ -758,6 +779,7 @@ function App() {
         onOpenHistory={() => setShowAllHistory(true)}
         onOpenStealthQueue={() => setStealthQueueOpen(true)}
         stealthActiveCount={stealthActiveCount}
+        odActiveCount={odActiveCount}
         onSignOut={signOut}
         onExitGuest={exitGuest}
       />
@@ -793,6 +815,19 @@ function App() {
               Dismiss
             </button>
           </div>
+        )}
+
+        {/* OD Queue Mode */}
+        {activeNav === "od-jobs" && (
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center py-24">
+                <Loader2 className="w-8 h-8 text-teal-500 animate-spin" />
+              </div>
+            }
+          >
+            <OdJobsView />
+          </Suspense>
         )}
 
         {/* Site Dashboard Mode */}

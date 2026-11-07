@@ -334,3 +334,96 @@ export interface SiteDashboard {
   updatedAt: string;
 }
 
+// ==========================================
+// Outreach Dashboard (OD) Integration Types
+// ==========================================
+
+export type OdJobStatus = "queued" | "running" | "ready" | "partial" | "failed" | "undelivered";
+
+export interface OdAuditRequest {
+  leadId: string | number;
+  website: string;
+  email?: string;
+  company?: string;
+  callbackUrl: string;
+  slotId?: string | number;
+}
+
+export interface OdTakeawayItem {
+  id: string;
+  finding: string;
+  severity: "critical" | "high" | "medium";
+  metric: string;
+  sampleSize: number;
+  source: "measured" | "estimated";
+  detail: string;
+  recommendation: string;
+}
+
+export interface OdTakeaways {
+  overallScore: number;
+  grade: "A+" | "A" | "B" | "C" | "D" | "F";
+  summaryText: string;
+  topIssues: OdTakeawayItem[];
+  stagesFinished: string[];
+  pagesAudited: number;
+  noOpportunity?: boolean;
+  dataSources: Record<string, "measured" | "estimated" | "computed">;
+  metrics: {
+    ttfbMs: number;
+    estimatedLcpSec?: number;
+    clsRiskCount: number;
+    missingMetaDescCount: number;
+    missingTitlesCount: number;
+    missingH1Count: number;
+    duplicateTitlesCount: number;
+    duplicateDescCount: number;
+    schemaCount: number;
+    httpsRedirect: boolean;
+  };
+}
+
+export interface OdJob {
+  id: string;
+  leadId: string | number;
+  website: string;
+  email?: string;
+  company?: string;
+  callbackUrl: string;
+  slotId?: string | number;
+  status: OdJobStatus;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  stagesFinished: string[];
+  stageDurations?: Record<string, number>;
+  dataSources?: Record<string, "measured" | "estimated" | "computed">;
+  isPartial?: boolean;
+  noOpportunity?: boolean;
+  score?: number;
+  grade?: string;
+  takeaways?: OdTakeaways;
+  pdfPath?: string;
+  pdfName?: string;
+  pdfBase64?: string;
+  error?: string;
+  callbackAttempts: number;
+  autoRetryCount?: number;
+  callbackSuccess?: boolean;
+  callbackError?: string;
+  callbackConfigError?: string;
+  lastCallbackAt?: string;
+}
+
+export interface OdQueueStatus {
+  total: number;
+  running: number;
+  queued: number;
+  completed: number;
+  partial: number;
+  failed: number;
+  undelivered: number;
+  maxConcurrency: number;
+}
+
+

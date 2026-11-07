@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, rgb, StandardFonts, type PDFFont, type Color } from "pdf-lib";
 import type { AuditResult } from "../src/types";
 
 export interface GeneratePdfOptions {
@@ -19,8 +19,44 @@ export interface GeneratedPdfResult {
   sizeBytes: number;
 }
 
+/**
+ * Sanitizes input text to guarantee compatibility with PDF Standard WinAnsi Helvetica encoding.
+ * Safely handles Bengali, Hindi (Devanagari), currency symbols (₹, €, £), emojis, and typography.
+ */
+export function sanitizeForPdf(text: string): string {
+  if (!text) return "";
+  return String(text)
+    // Replace curly quotes & typography punctuation
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[—–]/g, "-")
+    .replace(/…/g, "...")
+    .replace(/[•·]/g, "*")
+    .replace(/₹/g, "INR ")
+    .replace(/€/g, "EUR ")
+    .replace(/£/g, "GBP ")
+    .replace(/©/g, "(c)")
+    .replace(/®/g, "(R)")
+    .replace(/™/g, "TM")
+    // Strip non-Latin scripts (Bengali, Devanagari, Arabic, CJK, etc.) and emojis that cannot be encoded in WinAnsi
+    .replace(/[\u0980-\u09FF]/g, "") // Bengali
+    .replace(/[\u0900-\u097F]/g, "") // Hindi / Devanagari
+    .replace(/[\u{1F300}-\u{1F9FF}]/gu, "") // Emojis
+    .replace(/[\u{2600}-\u{26FF}]/gu, "") // Misc symbols
+    .replace(/[\u{2700}-\u{27BF}]/gu, "") // Dingbats
+    // Keep only valid printable ASCII (32-126) plus common Latin-1 (160-255)
+    .split("")
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return (code >= 32 && code <= 126) || (code >= 160 && code <= 255) || code === 10 || code === 13;
+    })
+    .join("")
+    .trim();
+}
+
 function wrapText(text: string, maxCharsPerLine: number): string[] {
-  const words = text.split(/\s+/);
+  const safeText = sanitizeForPdf(text);
+  const words = safeText.split(/\s+/);
   const lines: string[] = [];
   let currentLine = "";
 
@@ -54,12 +90,23 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
   const filename = `${cleanDomain}_technical_audit.pdf`;
   const absolutePath = path.join(outputDir, filename);
 
+  // Fallback to domain if businessName is empty or becomes empty after sanitisation (Item 8)
+  const sanitizedBusiness = sanitizeForPdf(businessName);
+  const effectiveBusinessName = sanitizedBusiness || cleanDomain.replace(/_/g, " ") || domain;
+
   const doc = await PDFDocument.create();
   const page = doc.addPage([595.28, 841.89]); // A4
   const { width, height } = page.getSize();
 
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const boldFont = await doc.embedFont(StandardFonts.HelveticaBold);
+
+  const drawSafeText = (str: string, opts: { x: number; y: number; size: number; font?: PDFFont; color?: Color }) => {
+    const safe = sanitizeForPdf(str);
+    if (safe) {
+      page.drawText(safe, { ...opts, font: opts.font || font });
+    }
+  };
 
   // Palette
   const darkNavy = rgb(0.06, 0.09, 0.16);
@@ -83,7 +130,8 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     borderWidth: 1,
   });
 
-  page.drawText("ONLINE DIGITAL SOLUTION (ODS)", {
+  const brandName = (process.env.CONSULTANCY_BRAND_NAME || "SEO AUDIT PRO").toUpperCase();
+  drawSafeText(brandName, {
     x: 55,
     y: cursorY - 10,
     size: 14,
@@ -91,7 +139,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     color: darkNavy,
   });
 
-  page.drawText("Technical Diagnostic & Architecture Audit Report", {
+  drawSafeText("Technical Diagnostic & Architecture Audit Report", {
     x: 55,
     y: cursorY - 26,
     size: 9,
@@ -105,14 +153,14 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     day: "numeric",
   });
 
-  page.drawText(`Date: ${auditDateStr}`, {
+  drawSafeText(`Date: ${auditDateStr}`, {
     x: width - 160,
     y: cursorY - 10,
     size: 9,
     font,
     color: slateText,
   });
-  page.drawText("Confidential Client Report", {
+  drawSafeText("Confidential Client Report", {
     x: width - 180,
     y: cursorY - 26,
     size: 8,
@@ -133,14 +181,14 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     borderWidth: 1,
   });
 
-  page.drawText("PROSPECT:", {
+  drawSafeText("PROSPECT:", {
     x: 55,
     y: cursorY - 15,
     size: 8,
     font: boldFont,
     color: slateText,
   });
-  page.drawText(businessName || domain, {
+  drawSafeText(effectiveBusinessName, {
     x: 110,
     y: cursorY - 15,
     size: 11,
@@ -148,14 +196,14 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     color: darkNavy,
   });
 
-  page.drawText("WEBSITE:", {
+  drawSafeText("WEBSITE:", {
     x: 55,
     y: cursorY - 30,
     size: 8,
     font: boldFont,
     color: slateText,
   });
-  page.drawText(websiteUrl || domain, {
+  drawSafeText(websiteUrl || domain, {
     x: 110,
     y: cursorY - 30,
     size: 10,
@@ -166,14 +214,14 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
   const score = result.score ?? 70;
   const grade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : score >= 50 ? "C" : "D";
 
-  page.drawText("HEALTH SCORE:", {
+  drawSafeText("HEALTH SCORE:", {
     x: width - 190,
     y: cursorY - 15,
     size: 8,
     font: boldFont,
     color: slateText,
   });
-  page.drawText(`${score}/100 (Grade ${grade})`, {
+  drawSafeText(`${score}/100 (Grade ${grade})`, {
     x: width - 190,
     y: cursorY - 30,
     size: 11,
@@ -194,7 +242,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     borderWidth: 1,
   });
 
-  page.drawText("EXECUTIVE TAKEAWAYS & CRITICAL BOTTLENECKS", {
+  drawSafeText("EXECUTIVE TAKEAWAYS & CRITICAL BOTTLENECKS", {
     x: 55,
     y: cursorY - 15,
     size: 10,
@@ -210,7 +258,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
   const takeawayLines = wrapText(resolvedTakeaways, 75);
   let tkY = cursorY - 32;
   for (const line of takeawayLines.slice(0, 3)) {
-    page.drawText(`• ${line}`, {
+    drawSafeText(`* ${line}`, {
       x: 55,
       y: tkY,
       size: 9,
@@ -222,8 +270,8 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
 
   cursorY -= 105;
 
-  // 4. Core Web Vitals & Diagnostic Signals
-  page.drawText("CORE WEB VITALS & PERFORMANCE BENCHMARKS", {
+  // 4. Core Web Vitals & Diagnostic Signals (Provenance Marked)
+  drawSafeText("CORE WEB VITALS & PERFORMANCE BENCHMARKS", {
     x: 42,
     y: cursorY,
     size: 10,
@@ -233,14 +281,14 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
   cursorY -= 12;
 
   const ttfb = result.pageSpeed?.responseTimeMs || 0;
-  const lcp = ttfb > 0 ? ((ttfb / 1000) * 2.2 + 0.8).toFixed(2) + "s" : "2.4s";
+  const lcp = ttfb > 0 ? ((ttfb / 1000) * 2.2 + 0.8).toFixed(1) + "s" : "2.4s";
   const htmlSize = Math.round((result.pageSpeed?.htmlSizeBytes || 0) / 1024);
 
   const metrics = [
-    { label: "Server Latency (TTFB)", val: `${ttfb} ms`, status: ttfb > 600 ? "Needs SSR Edge Caching" : "Passed" },
-    { label: "Estimated LCP", val: lcp, status: Number.parseFloat(lcp) > 2.5 ? "Poor / Render-blocking" : "Good" },
-    { label: "HTML Payload", val: `${htmlSize} KB`, status: htmlSize > 150 ? "Unminified Assets" : "Optimized" },
-    { label: "Mobile Responsive", val: result.pageSpeed?.mobileOptimized ? "Yes" : "No", status: result.pageSpeed?.mobileOptimized ? "Viewport Valid" : "Action Required" },
+    { label: "Server Latency (TTFB)", val: `${ttfb} ms`, status: ttfb > 600 ? "Needs Edge Cache" : "Measured Pass", tag: "[measured]" },
+    { label: "Estimated LCP", val: `~${lcp}`, status: Number.parseFloat(lcp) > 2.5 ? "Poor / Latency" : "Good", tag: "[estimated]" },
+    { label: "HTML Payload", val: `${htmlSize} KB`, status: htmlSize > 150 ? "Unminified Assets" : "Optimized", tag: "[measured]" },
+    { label: "Mobile Responsive", val: result.pageSpeed?.mobileOptimized ? "Yes" : "No", status: result.pageSpeed?.mobileOptimized ? "Viewport Valid" : "Action Required", tag: "[measured]" },
   ];
 
   const colWidth = (width - 80) / 4;
@@ -257,7 +305,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
       borderWidth: 1,
     });
 
-    page.drawText(m.label, {
+    drawSafeText(m.label, {
       x: boxX + 6,
       y: cursorY - 14,
       size: 7,
@@ -265,7 +313,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
       color: slateText,
     });
 
-    page.drawText(m.val, {
+    drawSafeText(m.val, {
       x: boxX + 6,
       y: cursorY - 28,
       size: 11,
@@ -273,10 +321,10 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
       color: darkNavy,
     });
 
-    page.drawText(m.status, {
+    drawSafeText(`${m.status} ${m.tag}`, {
       x: boxX + 6,
       y: cursorY - 40,
-      size: 6.5,
+      size: 6,
       font,
       color: m.status.includes("Needs") || m.status.includes("Poor") || m.status.includes("Action") ? roseRed : emeraldGreen,
     });
@@ -284,8 +332,8 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
 
   cursorY -= 75;
 
-  // 5. Prescriptive Solutions (ODS Capabilities)
-  page.drawText("PRESCRIPTIVE ENGINEERING SOLUTIONS (ODS CAPABILITIES)", {
+  // 5. Prescriptive Engineering Solutions (ODS Capabilities)
+  drawSafeText("PRESCRIPTIVE ENGINEERING SOLUTIONS (ODS CAPABILITIES)", {
     x: 42,
     y: cursorY,
     size: 10,
@@ -320,7 +368,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
       borderWidth: 1,
     });
 
-    page.drawText(sol.title, {
+    drawSafeText(sol.title, {
       x: 52,
       y: cursorY - 15,
       size: 9,
@@ -331,7 +379,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     const descLines = wrapText(sol.desc, 80);
     let dY = cursorY - 28;
     for (const dline of descLines.slice(0, 2)) {
-      page.drawText(dline, {
+      drawSafeText(dline, {
         x: 52,
         y: dY,
         size: 8,
@@ -353,7 +401,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     color: borderGrey,
   });
 
-  page.drawText("Online Digital Solution (ODS) • Modern Web Architecture & Technical SEO", {
+  drawSafeText("Online Digital Solution (ODS) * Modern Web Architecture & Technical SEO", {
     x: 40,
     y: cursorY,
     size: 7.5,
@@ -361,7 +409,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     color: slateText,
   });
 
-  page.drawText("Next Step: Complimentary 10-minute engineering walkthrough to review quick-win implementation.", {
+  drawSafeText("Next Step: Complimentary 10-minute engineering walkthrough to review quick-win implementation.", {
     x: 40,
     y: cursorY - 12,
     size: 7.5,

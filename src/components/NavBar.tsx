@@ -6,9 +6,10 @@ import {
   ShieldCheck,
   History,
   Zap,
+  Radio,
 } from "lucide-react";
 
-export type NavPage = "audit" | "site-dashboard";
+export type NavPage = "audit" | "site-dashboard" | "od-jobs";
 
 interface NavBarProps {
   userName: string;
@@ -21,6 +22,7 @@ interface NavBarProps {
   onOpenHistory: () => void;
   onOpenStealthQueue?: () => void;
   stealthActiveCount?: number;
+  odActiveCount?: number;
   onSignOut: () => void;
   onExitGuest: () => void;
 }
@@ -28,6 +30,7 @@ interface NavBarProps {
 const NAV_ITEMS: { key: NavPage; label: string; icon: typeof FileSearch }[] = [
   { key: "audit", label: "Audit Studio", icon: FileSearch },
   { key: "site-dashboard", label: "Site Dashboard", icon: LayoutDashboard },
+  { key: "od-jobs", label: "OD Queue", icon: Radio },
 ];
 
 export function NavBar({
@@ -41,6 +44,7 @@ export function NavBar({
   onOpenHistory,
   onOpenStealthQueue,
   stealthActiveCount = 0,
+  odActiveCount = 0,
   onSignOut,
   onExitGuest,
 }: NavBarProps) {
@@ -95,6 +99,11 @@ export function NavBar({
                 >
                   <Icon className={`w-3.5 h-3.5 ${isActive ? "text-teal-600" : "text-slate-400"}`} />
                   <span>{item.label}</span>
+                  {item.key === "od-jobs" && odActiveCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-white animate-pulse">
+                      {odActiveCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
