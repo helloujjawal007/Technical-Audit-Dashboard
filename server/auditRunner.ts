@@ -2,6 +2,182 @@ import { createClient } from "@supabase/supabase-js";
 import { parseHTML } from "linkedom";
 import { safeFetchWithSsrfCheck } from "./ssrfValidator";
 
+export type NonAuditableReason = "client-rendered" | "waf-challenge" | "default-hosting" | "parked-domain";
+
+export interface NonAuditableCheckResult {
+  isNonAuditable: boolean;
+  reason?: NonAuditableReason;
+  message?: string;
+  matchedPattern?: string;
+}
+
+/**
+ * Detects whether a page falls into a non-auditable class (Item 5):
+ * 1. WAF / Anti-Bot Challenge pages (Cloudflare 'Just a moment...', Sucuri, Akamai, etc. even on HTTP 200)
+ * 2. Default hosting pages ('It works!', cPanel, Nginx default, WordPress default 'Hello world!', coming soon)
+ * 3. Parked / For-Sale domain pages (Sedo, HugeDomains, Dan.com, GoDaddy parking, Bodis, etc.)
+ * 4. Client-rendered SPA shells (empty #root or #app container with < 120 chars text)
+ */
+export function detectNonAuditablePage(
+  html: string,
+  statusCode: number,
+  headers: Record<string, string> = {}
+): NonAuditableCheckResult {
+  const normHtml = html || "";
+  const lowerHtml = normHtml.toLowerCase();
+  const lowerHeaders = Object.fromEntries(
+    Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v).toLowerCase()])
+  );
+
+  // 1. WAF / Anti-Bot Challenge Pages (even on HTTP 200)
+  const isCloudflare =
+    lowerHtml.includes("just a moment...") ||
+    lowerHtml.includes("cf-browser-verification") ||
+    lowerHtml.includes("attention required! | cloudflare") ||
+    lowerHtml.includes("challenges.cloudflare.com") ||
+    lowerHtml.includes("checking your browser before accessing") ||
+    lowerHtml.includes("cf-turnstile") ||
+    lowerHtml.includes("ddos protection by cloudflare") ||
+    (lowerHeaders["server"]?.includes("cloudflare") && (statusCode === 403 || statusCode === 429)) ||
+    Boolean(lowerHeaders["cf-ray"] && (statusCode === 403 || statusCode === 429));
+
+  const isSucuri =
+    lowerHtml.includes("sucuri website firewall") ||
+    lowerHtml.includes("sucuri cloudproxy") ||
+    lowerHtml.includes("access denied - sucuri");
+
+  const isAkamai =
+    lowerHtml.includes("access denied - akamai") ||
+    lowerHtml.includes("akamaighost") ||
+    (lowerHtml.includes("reference #18.") && lowerHtml.includes("access denied"));
+
+  const isGenericWaf =
+    lowerHtml.includes("request blocked by aws waf") ||
+    lowerHtml.includes("captcha-delivery.com") ||
+    lowerHtml.includes("security check to access") ||
+    (lowerHtml.includes("verify you are human") && (lowerHtml.includes("challenge") || lowerHtml.includes("captcha") || lowerHtml.includes("cloudflare")));
+
+  if (isCloudflare || isSucuri || isAkamai || isGenericWaf) {
+    const pattern = isCloudflare
+      ? "Cloudflare Bot/Security Challenge"
+      : isSucuri
+      ? "Sucuri WebSite Firewall"
+      : isAkamai
+      ? "Akamai Ghost Access Denied"
+      : "Automated WAF/Bot Challenge";
+    return {
+      isNonAuditable: true,
+      reason: "waf-challenge",
+      matchedPattern: pattern,
+      message: `Target site presented an automated WAF security challenge (${pattern}) on HTTP ${statusCode}. Automated audit aborted.`,
+    };
+  }
+
+  // 2. Default Hosting / Coming Soon Pages
+  const isApache =
+    lowerHtml.includes("it works!") ||
+    lowerHtml.includes("apache2 debian default page") ||
+    lowerHtml.includes("apache2 ubuntu default page");
+
+  const iscPanel =
+    lowerHtml.includes("cgi-sys/defaultwebpage.cgi") ||
+    (lowerHtml.includes("default web site page") && lowerHtml.includes("cpanel"));
+
+  const isNginx =
+    lowerHtml.includes("welcome to nginx!") ||
+    lowerHtml.includes("thank you for using nginx");
+
+  const isLiteSpeed =
+    lowerHtml.includes("litespeed web server") && lowerHtml.includes("proudly powered by litespeed");
+
+  const isWordpressDefault =
+    (lowerHtml.includes("welcome to wordpress. this is your first post.") ||
+      (lowerHtml.includes("hello world!") && lowerHtml.includes("just another wordpress site"))) &&
+    normHtml.length < 5000;
+
+  const isComingSoon =
+    (lowerHtml.includes("coming soon") ||
+      lowerHtml.includes("site not published") ||
+      lowerHtml.includes("website under construction")) &&
+    normHtml.length < 3000;
+
+  if (isApache || iscPanel || isNginx || isLiteSpeed || isWordpressDefault || isComingSoon) {
+    const pattern = isApache
+      ? "Apache Default Page ('It works!')"
+      : iscPanel
+      ? "cPanel Default Landing Page"
+      : isNginx
+      ? "Nginx Welcome Page"
+      : isLiteSpeed
+      ? "LiteSpeed Default Landing"
+      : isWordpressDefault
+      ? "WordPress Default Template ('Hello world!')"
+      : "Coming Soon / Site Not Published Landing";
+    return {
+      isNonAuditable: true,
+      reason: "default-hosting",
+      matchedPattern: pattern,
+      message: `Target URL is a default hosting or construction template (${pattern}). No auditable production website content found.`,
+    };
+  }
+
+  // 3. Parked / For-Sale Domain Pages
+  const isParked =
+    lowerHtml.includes("sedoparking") ||
+    lowerHtml.includes("sedo domain parking") ||
+    lowerHtml.includes("sedo.com") ||
+    lowerHtml.includes("hugedomains.com") ||
+    lowerHtml.includes("hugedomains") ||
+    lowerHtml.includes("dan.com") ||
+    lowerHtml.includes("afternic.com") ||
+    lowerHtml.includes("bodis.com") ||
+    lowerHtml.includes("undeveloped.com") ||
+    ((lowerHtml.includes("domain is for sale") || lowerHtml.includes("domain is available") || lowerHtml.includes("buy this domain")) &&
+      (lowerHtml.includes("buy") || lowerHtml.includes("inquire") || lowerHtml.includes("purchase") || lowerHtml.includes("godaddy") || lowerHtml.includes("dan.com") || lowerHtml.includes("sedo"))) ||
+    lowerHtml.includes("this domain is parked") ||
+    lowerHtml.includes("domain parked free");
+
+  if (isParked) {
+    return {
+      isNonAuditable: true,
+      reason: "parked-domain",
+      matchedPattern: "Parked / For-Sale Domain Signature",
+      message: "Target domain is currently parked or offered for sale. No live business website exists.",
+    };
+  }
+
+  // 4. JS-Rendered Client Shells (Empty root div with < 120 chars visible text)
+  const strippedText = normHtml
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
+    .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, " ")
+    .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const hasEmptyRootDiv =
+    /<div[^>]+id=["'](root|app|__next|___gatsby)["'][^>]*>\s*<\/div>/i.test(normHtml) ||
+    /<main[^>]+id=["'](root|app)["'][^>]*>\s*<\/main>/i.test(normHtml) ||
+    /<app-root[^>]*>\s*<\/app-root>/i.test(normHtml);
+
+  const hasJsRequiredNotice =
+    lowerHtml.includes("you need to enable javascript to run this app") ||
+    lowerHtml.includes("please enable javascript to continue using this application") ||
+    lowerHtml.includes("javascript is required to view this site");
+
+  if ((hasEmptyRootDiv || hasJsRequiredNotice) && strippedText.length < 120) {
+    return {
+      isNonAuditable: true,
+      reason: "client-rendered",
+      matchedPattern: `Client-Rendered SPA Shell (visible text length: ${strippedText.length} chars)`,
+      message: `Target site is an un-rendered Single Page Application shell (empty #${hasEmptyRootDiv ? "root/app" : "shell"} container with ${strippedText.length} visible characters). Raw HTML crawler cannot evaluate JavaScript-rendered DOM.`,
+    };
+  }
+
+  return { isNonAuditable: false };
+}
 
 interface CheckResult {
   id: string;
@@ -153,17 +329,27 @@ function getMeta(doc: Document, selector: string, attr = "content"): string | nu
   return el.getAttribute(attr) || el.textContent?.trim() || null;
 }
 
-function stripHtml(html: string): { doc: Document; text: string } {
-  let safeHtml = html && typeof html === "string" && html.trim().length > 0
-    ? html
-    : "<!DOCTYPE html><html><head></head><body></body></html>";
-  if (!safeHtml.includes("<html") && !safeHtml.includes("<!DOCTYPE") && !safeHtml.includes("<body")) {
-    safeHtml = `<!DOCTYPE html><html><head></head><body>${safeHtml}</body></html>`;
+export function stripHtml(html: string): { doc: Document; text: string } {
+  if (!html || typeof html !== "string" || html.trim().length === 0) {
+    throw new Error("empty or unparseable response: Web server returned 0 bytes of content.");
   }
-  const { document: doc } = parseHTML(safeHtml);
-  if (doc) {
-    doc.querySelectorAll("script, style, noscript, template").forEach((n) => n.remove());
+  const { document: doc } = parseHTML(html);
+  if (!doc) {
+    throw new Error("empty or unparseable response: Document failed to parse.");
   }
+
+  // Priority 1 Item 2: Parse Sanity Gate
+  // If the document has no body or no head, the job is 'failed' (reason: empty or unparseable response), never a list of "missing" findings.
+  const headEl = doc.querySelector("head");
+  const bodyEl = doc.querySelector("body");
+  if (!headEl || !bodyEl) {
+    throw new Error("empty or unparseable response: Document lacks standard HTML <head> or <body> elements.");
+  }
+
+  // Remove non-JSON-LD scripts, styles, etc. while strictly preserving <script type="application/ld+json"> for Schema validation
+  const removableElements = doc.querySelectorAll('script:not([type="application/ld+json"]), style, noscript, template');
+  removableElements.forEach((n) => n.remove());
+
   const text = doc?.body?.textContent?.replace(/\s+/g, " ").trim() || "";
   return { doc: doc as unknown as Document, text };
 }
@@ -802,8 +988,8 @@ async function fetchKeywordMetrics(keywords: string[]): Promise<KeywordMetric[]>
   }
 
   try {
-    // Step 1: Get access token
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    // Step 1: Get access token via SSRF-safe fetch
+    const { response: tokenRes } = await safeFetchWithSsrfCheck("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -811,15 +997,15 @@ async function fetchKeywordMetrics(keywords: string[]): Promise<KeywordMetric[]>
         client_secret: clientSecret,
         refresh_token: refreshToken,
         grant_type: "refresh_token",
-      }),
+      }).toString(),
     });
 
     if (!tokenRes.ok) throw new Error("Failed to get Google Ads access token");
     const tokenData = await tokenRes.json();
     const accessToken = tokenData.access_token;
 
-    // Step 2: Query Keyword Plan API
-    const planRes = await fetch(`https://googleads.googleapis.com/v17/customers/${customerId}/googleAds:searchStream`, {
+    // Step 2: Query Keyword Plan API via SSRF-safe fetch
+    const { response: planRes } = await safeFetchWithSsrfCheck(`https://googleads.googleapis.com/v17/customers/${customerId}/googleAds:searchStream`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${accessToken}`,
@@ -1031,6 +1217,19 @@ async function auditSinglePage(
     res.headers.forEach((v, k) => { pageHeaders[k.toLowerCase()] = v; });
     pageHtml = await res.text();
     htmlSizeBytes = pageHtml.length;
+
+    // Item 5: Detect and refuse to audit non-auditable pages (WAF challenge, default hosting, parked domain, client-rendered SPA shell)
+    const nonAuditable = detectNonAuditablePage(pageHtml, pageStatus, pageHeaders);
+    if (nonAuditable.isNonAuditable) {
+      const naError = Object.assign(
+        new Error(nonAuditable.message || `Non-auditable page detected (${nonAuditable.reason})`),
+        {
+          nonAuditableReason: nonAuditable.reason,
+          noOpportunity: true,
+        }
+      );
+      throw naError;
+    }
 
     // Detect Cloudflare / Bot Management Challenge Block or 403/429
     const isCloudflareBlocked = (pageStatus === 403 || pageStatus === 429) && (
@@ -2716,6 +2915,7 @@ export function generateOdTakeaways(options: {
   let missingMetaDescCount = 0;
   let missingTitlesCount = 0;
   let missingH1Count = 0;
+  let missingCanonicalCount = 0;
   const schemaCount = (primaryResult.schema || []).length;
   let httpsRedirect = true;
 
@@ -2730,6 +2930,9 @@ export function generateOdTakeaways(options: {
 
     const noHttps = page.checks?.some((c) => c.id === "https" && c.status === "fail");
     if (noHttps) httpsRedirect = false;
+
+    const hasCanonical = page.checks?.some((c) => c.id === "canonical" && c.status === "pass") || Boolean(page.canonicalUrl);
+    if (!hasCanonical) missingCanonicalCount++;
   }
 
   const duplicateTitlesCount = duplicatesSummary?.duplicateTitles?.reduce((acc, d) => acc + d.count, 0) || 0;
@@ -2737,17 +2940,17 @@ export function generateOdTakeaways(options: {
 
   const candidates: (OdTakeawayItem & { weight: number })[] = [];
 
-  // 1. LCP (Item 1: Only send real measured LCP from PageSpeed Insights API; never send estimated LCP as hard number)
+  // 1. LCP (Item 6: Word measured results as 'Lighthouse test')
   if (typeof measuredLcpSec === "number" && measuredLcpSec > 2.5) {
     candidates.push({
       id: "lcp-measured",
       weight: 100,
       severity: measuredLcpSec > 4.0 ? "critical" : "high",
-      finding: "Slow Largest Contentful Paint (LCP)",
-      metric: `LCP ${measuredLcpSec}s (Google PageSpeed Insights)`,
+      finding: "Slow Largest Contentful Paint (LCP) - Lighthouse test",
+      metric: `LCP ${measuredLcpSec}s (Lighthouse test)`,
       sampleSize: pagesAudited,
       source: "measured",
-      detail: `Largest Contentful Paint took ${measuredLcpSec}s, failing Google Core Web Vitals recommended threshold of 2.5s.`,
+      detail: `Largest Contentful Paint took ${measuredLcpSec}s in automated Lighthouse test, failing Google Core Web Vitals recommended threshold of 2.5s.`,
       recommendation: "Optimize critical rendering path, eliminate render-blocking scripts, and serve preloaded hero assets.",
     });
   }
@@ -2852,6 +3055,20 @@ export function generateOdTakeaways(options: {
     });
   }
 
+  if (missingCanonicalCount > 0) {
+    candidates.push({
+      id: "missing-canonical",
+      weight: 78,
+      severity: "medium",
+      finding: "Missing Canonical URL Tag (<link rel='canonical'>)",
+      metric: `${missingCanonicalCount} page${missingCanonicalCount > 1 ? "s" : ""} missing canonical URL tag`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "Pages lack canonical link tags, leaving the site vulnerable to duplicate content penalties and split link equity across URL variants.",
+      recommendation: "Add self-referential <link rel='canonical' href='...' /> tags in the HTML <head> of all primary indexable pages.",
+    });
+  }
+
   // CLS (Item 1: Unsized image assets labeled layout shift risk, source: estimated)
   if (clsRiskCount > 0) {
     candidates.push({
@@ -2880,16 +3097,21 @@ export function generateOdTakeaways(options: {
     recommendation,
   }));
 
-  // Scoring consistency (Item 7: Score must directly reflect findings; 0 findings = 98 A+ with noOpportunity)
-  let overallScore = 98;
-  if (topIssues.length > 0) {
-    const deductions = topIssues.reduce((acc, issue) => {
-      if (issue.severity === "critical") return acc + 15;
-      if (issue.severity === "high") return acc + 10;
-      return acc + 5;
-    }, 0);
-    overallScore = Math.max(35, Math.min(88, 100 - deductions));
+  // Dynamic Scoring Contract (Item 4: Score must directly depend on measured check severity deductions, never hardcoded 98)
+  let deductions = 0;
+  for (const issue of topIssues) {
+    if (issue.severity === "critical") deductions += 15;
+    else if (issue.severity === "high") deductions += 10;
+    else deductions += 5;
   }
+
+  const allChecks = primaryResult.checks || [];
+  const failedChecks = allChecks.filter((c) => c.status === "fail");
+  const warnChecks = allChecks.filter((c) => c.status === "warn");
+  const additionalDeduction = Math.min(25, (failedChecks.length * 3) + (warnChecks.length * 1));
+
+  let overallScore = 100 - (deductions + Math.round(additionalDeduction / 2));
+  overallScore = Math.max(15, Math.min(100, overallScore));
 
   let grade: "A+" | "A" | "B" | "C" | "D" | "F" = "F";
   if (overallScore >= 95) grade = "A+";
@@ -2919,6 +3141,7 @@ export function generateOdTakeaways(options: {
     headings: "measured",
     duplicates: "measured",
     schema: "measured",
+    canonical: "measured",
     httpsRedirect: "measured",
   };
 
@@ -2941,6 +3164,7 @@ export function generateOdTakeaways(options: {
       duplicateTitlesCount,
       duplicateDescCount,
       schemaCount,
+      missingCanonicalCount,
       httpsRedirect,
     },
   };

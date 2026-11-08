@@ -11,6 +11,7 @@ export interface OutreachLeadPayload {
   audit_pdf_name?: string;
   audit_pdf_path?: string;
   enroll_autopilot?: boolean;
+  slot_id?: "A" | "B" | "C" | "D" | "E" | string;
   result?: Partial<AuditResult>;
 }
 
@@ -150,6 +151,7 @@ export async function sendLeadToOutreach(payload: OutreachLeadPayload): Promise<
       audit_key_takeaways: payload.audit_key_takeaways || "Core Web Vitals bottlenecks and missing structured schema",
       audit_pdf_name: payload.audit_pdf_name || `${payload.website_url.replace(/^https?:\/\//, "")}_technical_audit.pdf`,
       audit_pdf_path: payload.audit_pdf_path || "",
+      slot_id: payload.slot_id || "A",
       enroll_autopilot: payload.enroll_autopilot !== false,
     }),
   });

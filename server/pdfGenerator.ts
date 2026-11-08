@@ -82,6 +82,37 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     outputDir = path.resolve(process.cwd(), "reports"),
   } = options;
 
+  // Item 15: Configurable real consultancy branding from environment variables
+  // Strictly refuse to generate if unset or containing placeholder / fictional data (e.g. 555 numbers, seoauditpro.com)
+  const brandName = (process.env.CONSULTANCY_BRAND_NAME || "").trim();
+  const contactEmail = (process.env.CONSULTANCY_EMAIL || "").trim();
+  const contactPhone = (process.env.CONSULTANCY_PHONE || "").trim();
+  const contactWebsite = (process.env.CONSULTANCY_WEBSITE || "").trim();
+
+  const isInvalidOrPlaceholder = (val: string) => {
+    const lower = val.toLowerCase();
+    return (
+      !val ||
+      lower.includes("seo audit pro") ||
+      lower.includes("seoauditpro") ||
+      lower.includes("555-") ||
+      lower.includes("5550") ||
+      lower.includes("example.com") ||
+      lower.includes("placeholder")
+    );
+  };
+
+  if (
+    isInvalidOrPlaceholder(brandName) ||
+    isInvalidOrPlaceholder(contactEmail) ||
+    isInvalidOrPlaceholder(contactPhone) ||
+    isInvalidOrPlaceholder(contactWebsite)
+  ) {
+    throw new Error(
+      `PDF Branding Error: Consultancy brand name and real contact details must be configured via environment variables (CONSULTANCY_BRAND_NAME, CONSULTANCY_EMAIL, CONSULTANCY_PHONE, CONSULTANCY_WEBSITE). Fictional placeholders (e.g. 555 numbers, seoauditpro.com) are strictly rejected.`
+    );
+  }
+
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
@@ -130,8 +161,8 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     borderWidth: 1,
   });
 
-  const brandName = (process.env.CONSULTANCY_BRAND_NAME || "SEO AUDIT PRO").toUpperCase();
-  drawSafeText(brandName, {
+  const headerBrandName = brandName.toUpperCase();
+  drawSafeText(headerBrandName, {
     x: 55,
     y: cursorY - 10,
     size: 14,
@@ -392,7 +423,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     cursorY -= 56;
   }
 
-  // 6. Footer & CTA
+  // 6. Footer & Consultancy Contact Details (Item 13)
   cursorY = 55;
   page.drawLine({
     start: { x: 40, y: cursorY + 15 },
@@ -401,20 +432,28 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     color: borderGrey,
   });
 
-  drawSafeText("Online Digital Solution (ODS) * Modern Web Architecture & Technical SEO", {
+  drawSafeText(`${brandName} | Technical SEO & Architecture Advisory`, {
     x: 40,
     y: cursorY,
     size: 7.5,
     font: boldFont,
-    color: slateText,
+    color: darkNavy,
+  });
+
+  drawSafeText(`Email: ${contactEmail}   |   Tel: ${contactPhone}   |   Web: ${contactWebsite}`, {
+    x: 40,
+    y: cursorY - 11,
+    size: 7,
+    font,
+    color: tealPrimary,
   });
 
   drawSafeText("Next Step: Complimentary 10-minute engineering walkthrough to review quick-win implementation.", {
     x: 40,
-    y: cursorY - 12,
-    size: 7.5,
+    y: cursorY - 22,
+    size: 6.5,
     font,
-    color: tealPrimary,
+    color: slateText,
   });
 
   const pdfBytes = await doc.save();

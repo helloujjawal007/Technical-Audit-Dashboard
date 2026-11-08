@@ -137,7 +137,7 @@ export function OdJobsView() {
           website: testWebsite,
           company: testCompany,
           callbackUrl: testCallbackUrl,
-          slotId: 1,
+          slotId: "A",
         }),
       });
 

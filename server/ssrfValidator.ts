@@ -2,6 +2,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import http from "node:http";
 import https from "node:https";
+import zlib from "node:zlib";
 
 // Private IPv4 and IPv6 CIDR matchers
 const PRIVATE_IPV4_REGEX = [
@@ -33,6 +34,11 @@ export function isPrivateIp(ip: string): boolean {
   // Strip IPv6 brackets if present
   if (cleanIp.startsWith("[") && cleanIp.endsWith("]")) {
     cleanIp = cleanIp.slice(1, -1);
+  }
+
+  // Strip IPv6 Zone IDs (e.g. fe80::1%eth0)
+  if (cleanIp.includes("%")) {
+    cleanIp = cleanIp.split("%")[0];
   }
 
   // IPv4 check
@@ -80,12 +86,18 @@ export function isPrivateIp(ip: string): boolean {
 }
 
 /**
- * Parses alternative representations of IPv4 (decimal, hex, octal).
+ * Parses alternative representations of IPv4 (decimal, hex, octal, shorthand forms like 127.1 or 0).
  */
 export function parseAlternativeIp(raw: string): string | null {
-  const clean = raw.trim().toLowerCase();
+  let clean = raw.trim().toLowerCase();
+  if (clean.startsWith("[") && clean.endsWith("]")) {
+    clean = clean.slice(1, -1);
+  }
+  if (clean.includes("%")) {
+    clean = clean.split("%")[0];
+  }
 
-  // 1. Single 32-bit integer (e.g. 2130706433 or 0x7f000001)
+  // 1. Single 32-bit integer or 0 (e.g. 0 -> 0.0.0.0, 2130706433 or 0x7f000001 -> 127.0.0.1)
   if (/^\d+$/.test(clean)) {
     const num = Number(clean);
     if (!isNaN(num) && num >= 0 && num <= 4294967295) {
@@ -99,22 +111,42 @@ export function parseAlternativeIp(raw: string): string | null {
     }
   }
 
-  // 2. Dotted notation with octal/hex parts (e.g. 0177.0.0.1 or 0x7f.0.0.1)
+  const parsePart = (p: string): number | null => {
+    let val: number;
+    if (/^0x[0-9a-f]+$/i.test(p)) val = parseInt(p, 16);
+    else if (/^0[0-7]+$/.test(p)) val = parseInt(p, 8);
+    else if (/^\d+$/.test(p)) val = parseInt(p, 10);
+    else return null;
+    return isNaN(val) ? null : val;
+  };
+
   const segments = clean.split(".");
+
+  // 2-segment shorthand (e.g. 127.1 -> 127.0.0.1)
+  if (segments.length === 2) {
+    const p0 = parsePart(segments[0]);
+    const p1 = parsePart(segments[1]);
+    if (p0 !== null && p1 !== null && p0 >= 0 && p0 <= 255 && p1 >= 0 && p1 <= 16777215) {
+      return `${p0}.${(p1 >>> 16) & 255}.${(p1 >>> 8) & 255}.${p1 & 255}`;
+    }
+  }
+
+  // 3-segment shorthand (e.g. 127.0.1 -> 127.0.0.1)
+  if (segments.length === 3) {
+    const p0 = parsePart(segments[0]);
+    const p1 = parsePart(segments[1]);
+    const p2 = parsePart(segments[2]);
+    if (p0 !== null && p1 !== null && p2 !== null && p0 >= 0 && p0 <= 255 && p1 >= 0 && p1 <= 255 && p2 >= 0 && p2 <= 65535) {
+      return `${p0}.${p1}.${(p2 >>> 8) & 255}.${p2 & 255}`;
+    }
+  }
+
+  // 4-segment standard or octal/hex dotted (e.g. 0177.0.0.1 or 0x7f.0.0.1)
   if (segments.length === 4) {
     const parsedSegments: number[] = [];
     for (const seg of segments) {
-      let val: number;
-      if (/^0x[0-9a-f]+$/i.test(seg)) {
-        val = parseInt(seg, 16);
-      } else if (/^0[0-7]+$/.test(seg)) {
-        val = parseInt(seg, 8);
-      } else if (/^\d+$/.test(seg)) {
-        val = parseInt(seg, 10);
-      } else {
-        return null;
-      }
-      if (isNaN(val) || val < 0 || val > 255) return null;
+      const val = parsePart(seg);
+      if (val === null || val < 0 || val > 255) return null;
       parsedSegments.push(val);
     }
     return parsedSegments.join(".");
@@ -131,6 +163,9 @@ export function isBlockedHostname(hostname: string): boolean {
   if (lower.startsWith("[") && lower.endsWith("]")) {
     lower = lower.slice(1, -1);
   }
+  if (lower.includes("%")) {
+    lower = lower.split("%")[0];
+  }
 
   if (BLOCKED_HOSTNAMES.has(lower)) return true;
   if (lower.endsWith(".local") || lower.endsWith(".internal") || lower.endsWith(".lan") || lower.endsWith(".corp")) {
@@ -142,7 +177,7 @@ export function isBlockedHostname(hostname: string): boolean {
     return isPrivateIp(lower);
   }
 
-  // Check alternative IP forms (decimal, hex, octal)
+  // Check alternative IP forms (decimal, hex, octal, shorthand)
   const altIp = parseAlternativeIp(lower);
   if (altIp) {
     return isPrivateIp(altIp);
@@ -152,10 +187,10 @@ export function isBlockedHostname(hostname: string): boolean {
 }
 
 /**
- * Resolves DNS for hostname and checks if any resolved IP is private.
- * Returns the first validated public IP for DNS rebinding protection.
+ * Resolves DNS for hostname and checks if ANY resolved IP is private.
+ * Returns all validated public IPs for DNS pinning and dual-stack fallback.
  */
-export async function resolvesToPrivateIp(hostname: string): Promise<{ isPrivate: boolean; validatedIp?: string }> {
+export async function resolvesToPrivateIp(hostname: string): Promise<{ isPrivate: boolean; validatedIp?: string; validatedIps?: string[] }> {
   if (isBlockedHostname(hostname)) return { isPrivate: true };
 
   try {
@@ -164,13 +199,15 @@ export async function resolvesToPrivateIp(hostname: string): Promise<{ isPrivate
       return { isPrivate: false };
     }
 
+    // Item 7: Validate every resolved IPv4 and IPv6 address
     for (const record of results) {
       if (isPrivateIp(record.address)) {
         return { isPrivate: true };
       }
     }
 
-    return { isPrivate: false, validatedIp: results[0].address };
+    const ips = results.map((r) => r.address);
+    return { isPrivate: false, validatedIp: ips[0], validatedIps: ips };
   } catch {
     // If DNS resolution fails, it is not a reachable private host; let crawler handle DNS failure
     return { isPrivate: false };
@@ -243,12 +280,12 @@ export async function validateWebsiteUrl(urlStr: string): Promise<{ valid: boole
     return { valid: false, error: "SSRF Protection: Requests to localhost, private networks, or metadata endpoints are strictly forbidden." };
   }
 
-  const { isPrivate, validatedIp } = await resolvesToPrivateIp(hostname);
+  const { isPrivate, validatedIp, validatedIps } = await resolvesToPrivateIp(hostname);
   if (isPrivate) {
     return { valid: false, error: "SSRF Protection: Target domain resolves to a private or loopback IP address." };
   }
 
-  return { valid: true, normalizedUrl: parsed.href, validatedIp };
+  return { valid: true, normalizedUrl: parsed.href, validatedIp, validatedIps };
 }
 
 /**
@@ -281,6 +318,7 @@ export function validateCallbackUrl(urlStr: string): { valid: boolean; error?: s
     "http://127.0.0.1:5001/api/audit-callback",
     "http://localhost:5174/api/od/test-callback",
     "http://127.0.0.1:5174/api/od/test-callback",
+    "https://outreach-dashboard-22t5.onrender.com/api/audit-callback",
   ];
 
   const envAllowed = (process.env.OD_CALLBACK_ALLOWLIST || "")
@@ -308,12 +346,35 @@ export function validateCallbackUrl(urlStr: string): { valid: boolean; error?: s
  * Performs a safe fetch with DNS rebinding protection, response-size cap (5MB), and redirect hop inspection.
  * Resolves DNS once, checks against private CIDRs, and connects directly to the validated IP.
  */
+/**
+ * ARCHITECTURAL PARITY NOTE: Supabase Edge Functions vs Node.js Transport
+ *
+ * 1. Node.js Transport (Local devBackend.ts & VPS environment):
+ *    Uses low-level 'node:https' and 'node:http' agents. Binds the HTTP socket directly
+ *    to the pre-validated public IP address (targetIp) returned by DNS lookup, preventing
+ *    Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding. Sets the TLS 'servername' (SNI)
+ *    and HTTP 'Host' header to the domain, enforces 'rejectUnauthorized: true', and streams
+ *    responses up to MAX_SAFE_RESPONSE_BYTES (5MB) before terminating the socket.
+ *
+ * 2. Supabase Edge Functions (Deno / V8 isolates):
+ *    Supabase Edge runtime restricts raw low-level TCP socket manipulation and custom
+ *    TLS client SNI bindings in sandboxed isolates. The Edge Function performs pre-fetch
+ *    DNS validation against private CIDRs before invoking the native Fetch API with
+ *    redirect: 'manual'.
+ */
 export const MAX_SAFE_RESPONSE_BYTES = 5 * 1024 * 1024; // 5 MB cap (C12, Item 9)
 
 export async function safeFetchWithSsrfCheck(
   targetUrl: string,
   options: RequestInit & { maxRedirects?: number; maxSizeBytes?: number; allowLocalhostForTesting?: boolean } = {}
 ): Promise<{ response: Response; finalUrl: string; redirectChain: string[] }> {
+  // Item 8: Prove allowLocalhostForTesting is forbidden in production
+  if (options.allowLocalhostForTesting) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Security Violation: allowLocalhostForTesting is strictly forbidden when NODE_ENV is production.");
+    }
+  }
+
   const maxRedirects = options.maxRedirects ?? 5;
   const maxSizeBytes = options.maxSizeBytes ?? MAX_SAFE_RESPONSE_BYTES;
   let currentUrl = targetUrl;
@@ -338,77 +399,123 @@ export async function safeFetchWithSsrfCheck(
     // Enforce single-resolution binding and strict response size cap (5MB)
     let res: Response;
     if (check.validatedIp && net.isIP(check.validatedIp)) {
-      // Connect to validated IP directly using node:https / node:http to enforce single-resolution binding
-      res = await new Promise<Response>((resolve, reject) => {
-        const isHttps = parsed.protocol === "https:";
-        const transport = isHttps ? https : http;
-        const port = parsed.port ? Number(parsed.port) : (isHttps ? 443 : 80);
+      const connectToIp = (ipToConnect: string): Promise<Response> => {
+        return new Promise<Response>((resolve, reject) => {
+          const isHttps = parsed.protocol === "https:";
+          const transport = isHttps ? https : http;
+          const port = parsed.port ? Number(parsed.port) : (isHttps ? 443 : 80);
 
-        const headers = { ...((options.headers as Record<string, string>) || {}) };
-        if (!headers["Host"] && !headers["host"]) {
-          headers["Host"] = parsed.host;
-        }
-
-        const req = transport.request(
-          {
-            hostname: targetIp,
-            port,
-            path: parsed.pathname + parsed.search,
-            method: options.method || "GET",
-            headers,
-            servername: isHttps ? parsed.hostname : undefined, // SNI for TLS verification
-            signal: options.signal as AbortSignal | undefined,
-          },
-          (nodeRes) => {
-            const chunks: Buffer[] = [];
-            let totalBytes = 0;
-
-            nodeRes.on("data", (chunk) => {
-              totalBytes += chunk.length;
-              if (totalBytes <= maxSizeBytes) {
-                chunks.push(Buffer.from(chunk));
-              } else {
-                // Response exceeded size cap: truncate and stop reading
-                const remaining = maxSizeBytes - (totalBytes - chunk.length);
-                if (remaining > 0) {
-                  chunks.push(Buffer.from(chunk).subarray(0, remaining));
-                }
-                nodeRes.destroy();
-              }
-            });
-
-            let isResolved = false;
-            const finish = () => {
-              if (isResolved) return;
-              isResolved = true;
-              const bodyBuffer = Buffer.concat(chunks);
-              const headerMap = new Headers();
-              for (const [k, v] of Object.entries(nodeRes.headers)) {
-                if (Array.isArray(v)) {
-                  v.forEach((val) => headerMap.append(k, val));
-                } else if (v) {
-                  headerMap.set(k, v);
-                }
-              }
-              const webResponse = new Response(bodyBuffer, {
-                status: nodeRes.statusCode || 200,
-                statusText: nodeRes.statusMessage || "OK",
-                headers: headerMap,
-              });
-              resolve(webResponse);
-            };
-
-            nodeRes.on("end", finish);
-            nodeRes.on("close", finish);
+          const headers = { ...((options.headers as Record<string, string>) || {}) };
+          if (!headers["Host"] && !headers["host"]) {
+            headers["Host"] = parsed.host;
           }
-        );
 
-        req.on("error", (err) => reject(err));
-        if (options.body) {
-          req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
+          const req = transport.request(
+            {
+              hostname: ipToConnect,
+              port,
+              path: parsed.pathname + parsed.search,
+              method: options.method || "GET",
+              headers,
+              servername: isHttps && !net.isIP(parsed.hostname) ? parsed.hostname : undefined, // SNI strictly original domain
+              rejectUnauthorized: true, // TLS verification strictly ON
+              signal: options.signal as AbortSignal | undefined,
+            },
+            (nodeRes) => {
+              const chunks: Buffer[] = [];
+              let totalBytes = 0;
+
+              nodeRes.on("data", (chunk) => {
+                totalBytes += chunk.length;
+                if (totalBytes <= maxSizeBytes) {
+                  chunks.push(Buffer.from(chunk));
+                } else {
+                  // Response exceeded size cap: truncate and stop reading
+                  const remaining = maxSizeBytes - (totalBytes - chunk.length);
+                  if (remaining > 0) {
+                    chunks.push(Buffer.from(chunk).subarray(0, remaining));
+                  }
+                  nodeRes.destroy();
+                }
+              });
+
+              let isResolved = false;
+              const finish = () => {
+                if (isResolved) return;
+                isResolved = true;
+                let bodyBuffer = Buffer.concat(chunks);
+
+                // Priority 1: Decompress gzip, deflate, and brotli payloads from remote servers
+                const encoding = (nodeRes.headers["content-encoding"] || "").toLowerCase().trim();
+                if (bodyBuffer.length > 0 && encoding) {
+                  try {
+                    if (encoding === "gzip" || encoding === "x-gzip") {
+                      bodyBuffer = zlib.gunzipSync(bodyBuffer, { maxOutputLength: maxSizeBytes });
+                    } else if (encoding === "br") {
+                      bodyBuffer = zlib.brotliDecompressSync(bodyBuffer, {
+                        params: { [zlib.constants.BROTLI_DECODER_PARAM_LARGE_WINDOW]: 1 },
+                        maxOutputLength: maxSizeBytes,
+                      });
+                    } else if (encoding === "deflate") {
+                      try {
+                        bodyBuffer = zlib.inflateSync(bodyBuffer, { maxOutputLength: maxSizeBytes });
+                      } catch {
+                        bodyBuffer = zlib.inflateRawSync(bodyBuffer, { maxOutputLength: maxSizeBytes });
+                      }
+                    }
+                  } catch (e: unknown) {
+                    const sample = bodyBuffer.slice(0, 50).toString("utf-8");
+                    if (!sample.includes("<")) {
+                      const msg = e instanceof Error ? e.message : String(e);
+                      console.warn(`Decompression (${encoding}) failed for ${currentUrl}:`, msg);
+                    }
+                  }
+                }
+
+                const headerMap = new Headers();
+                for (const [k, v] of Object.entries(nodeRes.headers)) {
+                  const lower = k.toLowerCase();
+                  if (lower === "content-encoding" || lower === "content-length") continue;
+                  if (Array.isArray(v)) {
+                    v.forEach((val) => headerMap.append(k, val));
+                  } else if (v) {
+                    headerMap.set(k, v);
+                  }
+                }
+                headerMap.set("content-length", String(bodyBuffer.length));
+
+                const webResponse = new Response(bodyBuffer, {
+                  status: nodeRes.statusCode || 200,
+                  statusText: nodeRes.statusMessage || "OK",
+                  headers: headerMap,
+                });
+                resolve(webResponse);
+              };
+
+              nodeRes.on("end", finish);
+              nodeRes.on("close", finish);
+            }
+          );
+
+          req.on("error", (err) => reject(err));
+          if (options.body) {
+            req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
+          }
+          req.end();
+        });
+      };
+
+      try {
+        res = await connectToIp(targetIp);
+      } catch (primaryErr: unknown) {
+        // Fallback to secondary validated IP if primary fails with network error (Item 7)
+        const fallbackIps = (check.validatedIps || []).filter((ip) => ip !== targetIp && net.isIP(ip));
+        if (fallbackIps.length > 0) {
+          res = await connectToIp(fallbackIps[0]);
+        } else {
+          throw primaryErr;
         }
-        req.end();
-      });
+      }
     } else {
       res = await fetch(currentUrl, {
         ...options,

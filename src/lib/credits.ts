@@ -16,7 +16,7 @@ export const FREE_TIER_LIMITS: Record<string, CreditLimit> = {
 };
 
 export const GUEST_DAILY_LIMIT = 5;
-export const ADMIN_DAILY_LIMIT = 200;
+export const ADMIN_DAILY_LIMIT = 450;
 
 export interface CreditUsage {
   used: number;

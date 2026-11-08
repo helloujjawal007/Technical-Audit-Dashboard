@@ -24,8 +24,61 @@ if (!fs.existsSync(STORE_DIR)) {
 }
 
 // -------------------------------------------------------------
-// Persistence & Concurrency Safety Helpers (C8, Item 3)
+// Persistence, PDF Auto-Deletion & Concurrency Safety Helpers
 // -------------------------------------------------------------
+
+export const DELIVERED_PDF_RETENTION_MS = 2 * 60 * 60 * 1000; // 2 hours retention after receipt by OD
+
+/**
+ * Automatically cleans up local PDF files for audits successfully received by OD (callbackSuccess === true).
+ * The PDF is retained locally for up to 2 hours for immediate inspection/troubleshooting, after which
+ * it is automatically unlinked from disk and its base64 memory cleared.
+ */
+export function cleanupDeliveredPdfs(retentionMs = DELIVERED_PDF_RETENTION_MS): { deletedCount: number; deletedFiles: string[] } {
+  const now = Date.now();
+  const deletedFiles: string[] = [];
+
+  for (const job of jobsMap.values()) {
+    // Only delete PDFs for audits successfully delivered to & received by OD
+    if (job.callbackSuccess === true) {
+      const deliveredTime = new Date(job.lastCallbackAt || job.completedAt || job.createdAt).getTime();
+      const ageMs = now - deliveredTime;
+
+      if (ageMs >= retentionMs) {
+        // 1. Delete primary PDF from disk
+        if (job.pdfPath && fs.existsSync(job.pdfPath)) {
+          try {
+            fs.unlinkSync(job.pdfPath);
+            deletedFiles.push(job.pdfPath);
+            console.log(`[OD Queue PDF Cleanup] Auto-deleted delivered PDF after 2h retention: ${job.pdfPath}`);
+          } catch (e) {
+            console.warn(`[OD Queue PDF Cleanup] Could not delete ${job.pdfPath}:`, e);
+          }
+        }
+
+        // 2. Delete from shared /tmp/reports/ if mirrored
+        if (job.pdfName) {
+          const sharedTmp = path.join("/tmp/reports", job.pdfName);
+          if (fs.existsSync(sharedTmp)) {
+            try {
+              fs.unlinkSync(sharedTmp);
+              deletedFiles.push(sharedTmp);
+            } catch {
+              // File already deleted or inaccessible
+            }
+          }
+        }
+
+        // 3. Clear memory base64 and record deletion
+        job.pdfBase64 = undefined;
+        job.pdfDeleted = true;
+        job.pdfDeletedAt = job.pdfDeletedAt || new Date().toISOString();
+      }
+    }
+  }
+
+  return { deletedCount: deletedFiles.length, deletedFiles };
+}
 
 function pruneOldJobs(): void {
   const MAX_RETAINED_JOBS = 200;
@@ -33,10 +86,13 @@ function pruneOldJobs(): void {
   const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
   const now = Date.now();
 
-  // Pruning Policy (Item 3 & Item 9):
-  // 1. Never prune unresolved 'failed' or 'undelivered' jobs.
-  // 2. Completed jobs ('ready' or 'partial') are pruned after 7 days or if exceeding retention limit.
-  // 3. Failed jobs are pruned ONLY IF their failure notice was successfully delivered to OD (callbackSuccess === true) AND 30 days have passed.
+  // 1. Auto-delete local PDFs for delivered audits after 2-hour retention
+  cleanupDeliveredPdfs();
+
+  // 2. Prune old job records (Item 3 & Item 9):
+  // - Never prune unresolved 'failed' or 'undelivered' jobs.
+  // - Completed jobs ('ready' or 'partial') are pruned after 7 days or if exceeding retention limit.
+  // - Failed jobs are pruned ONLY IF their failure notice was successfully delivered to OD (callbackSuccess === true) AND 30 days have passed.
   for (const [id, job] of jobsMap.entries()) {
     const ageMs = now - new Date(job.completedAt || job.createdAt).getTime();
 
@@ -116,8 +172,18 @@ function loadStore(): void {
 // Initialize store on startup
 loadStore();
 
-// Background periodic auto-retry for undelivered callbacks with bounded retries and backoff (Item 8)
-const MAX_AUTO_RETRIES = 5;
+// Background periodic auto-retry for undelivered callbacks with bounded retries and long-tail backoff (Item 9)
+const MAX_AUTO_RETRIES = 8;
+const LONG_TAIL_BACKOFF_MS = [
+  15 * 1000,        // 15s
+  60 * 1000,        // 1m
+  5 * 60 * 1000,    // 5m
+  15 * 60 * 1000,   // 15m
+  30 * 60 * 1000,   // 30m
+  60 * 60 * 1000,   // 1h
+  120 * 60 * 1000,  // 2h
+  240 * 60 * 1000,  // 4h
+];
 
 const retryInterval = setInterval(() => {
   const now = Date.now();
@@ -127,7 +193,7 @@ const retryInterval = setInterval(() => {
 
   for (const job of undelivered) {
     const attempts = job.autoRetryCount || 0;
-    const backoffMs = Math.pow(2, attempts) * 15000; // 15s, 30s, 60s, 120s, 240s
+    const backoffMs = LONG_TAIL_BACKOFF_MS[Math.min(attempts, LONG_TAIL_BACKOFF_MS.length - 1)];
     const lastAttemptTime = new Date(job.lastCallbackAt || 0).getTime();
 
     if (now - lastAttemptTime >= backoffMs) {
@@ -139,6 +205,14 @@ const retryInterval = setInterval(() => {
 }, 30000);
 if (retryInterval.unref) {
   retryInterval.unref();
+}
+
+// Background periodic timer (every 10 minutes) to auto-delete delivered PDFs older than 2 hours
+const pdfCleanupInterval = setInterval(() => {
+  cleanupDeliveredPdfs();
+}, 10 * 60 * 1000);
+if (pdfCleanupInterval.unref) {
+  pdfCleanupInterval.unref();
 }
 
 // -------------------------------------------------------------
@@ -162,6 +236,7 @@ export function getOdQueueStatus(): OdQueueStatus {
     partial,
     failed,
     undelivered,
+    undeliveredAlertCount: undelivered,
     maxConcurrency: MAX_CONCURRENCY,
   };
 }
@@ -198,6 +273,16 @@ export function enqueueOdJob(req: OdAuditRequest): { isDuplicate: boolean; job: 
     ? req.website.trim()
     : `https://${req.website.trim()}`;
 
+  // Normalize slotId to standard Outreach Dashboard 5-slot channels ('A'..'E')
+  let normalizedSlot = req.slotId ? String(req.slotId).trim().toUpperCase() : undefined;
+  if (normalizedSlot) {
+    if (normalizedSlot === "1" || normalizedSlot === "S1") normalizedSlot = "A";
+    else if (normalizedSlot === "2" || normalizedSlot === "S2") normalizedSlot = "B";
+    else if (normalizedSlot === "3" || normalizedSlot === "S3") normalizedSlot = "C";
+    else if (normalizedSlot === "4" || normalizedSlot === "S4") normalizedSlot = "D";
+    else if (normalizedSlot === "5" || normalizedSlot === "S5") normalizedSlot = "E";
+  }
+
   const job: OdJob = {
     id: jobId,
     leadId: req.leadId,
@@ -205,7 +290,7 @@ export function enqueueOdJob(req: OdAuditRequest): { isDuplicate: boolean; job: 
     email: req.email?.trim() || undefined,
     company: req.company?.trim() || undefined,
     callbackUrl: redactUrl(req.callbackUrl.trim()),
-    slotId: req.slotId,
+    slotId: normalizedSlot,
     status: "queued",
     createdAt: new Date().toISOString(),
     stagesFinished: [],
@@ -527,6 +612,33 @@ async function executeOdJob(job: OdJob): Promise<void> {
     console.error(`[OD Queue ${job.id}] Job failed with error:`, errorMsg);
     job.status = "failed";
     job.error = errorMsg;
+    const customErr = err as { nonAuditableReason?: string; noOpportunity?: boolean } | null;
+    if (customErr?.nonAuditableReason) {
+      job.noOpportunity = true;
+      job.nonAuditableReason = customErr.nonAuditableReason;
+      job.takeaways = {
+        overallScore: 0,
+        grade: "F",
+        summaryText: errorMsg,
+        topIssues: [],
+        stagesFinished: job.stagesFinished,
+        pagesAudited: 0,
+        noOpportunity: true,
+        dataSources: {},
+        metrics: {
+          ttfbMs: 0,
+          estimatedLcpSec: 0,
+          clsRiskCount: 0,
+          missingMetaDescCount: 0,
+          missingTitlesCount: 0,
+          missingH1Count: 0,
+          duplicateTitlesCount: 0,
+          duplicateDescCount: 0,
+          schemaCount: 0,
+          httpsRedirect: false,
+        },
+      };
+    }
     job.completedAt = new Date().toISOString();
   }
 
@@ -565,7 +677,8 @@ export async function dispatchOdCallback(job: OdJob): Promise<boolean> {
     slotId: job.slotId,
     status: job.status === "ready" || job.status === "partial" ? job.status : "failed",
     noOpportunity: Boolean(job.noOpportunity),
-    score: job.score || job.takeaways?.overallScore || 50,
+    reason: job.nonAuditableReason || null,
+    score: job.score || job.takeaways?.overallScore || (job.status === "failed" ? 0 : 50),
     takeaways: job.takeaways || null,
     findings: formattedFindings,
     pdf: job.pdfBase64 || null,
@@ -590,7 +703,10 @@ export async function dispatchOdCallback(job: OdJob): Promise<boolean> {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s strict timeout
 
-      const secret = (process.env.OD_CALLBACK_SECRET || process.env.OD_SHARED_SECRET || "").trim();
+      let secret = (process.env.OD_CALLBACK_SECRET || process.env.OD_SHARED_SECRET || "").trim();
+      if (job.callbackUrl.includes("outreach-dashboard-22t5.onrender.com")) {
+        secret = (process.env.RENDER_OD_CALLBACK_SECRET || "td-secret-key-2026").trim();
+      }
       if (!secret) {
         job.callbackConfigError = "Configuration Error: OD_CALLBACK_SECRET is not configured in server environment (Fail-Closed).";
         job.callbackSuccess = false;

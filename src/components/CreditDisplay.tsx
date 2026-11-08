@@ -63,7 +63,7 @@ export function CreditDisplay() {
               )}
             </div>
             <p className="text-[11px] text-slate-400">
-              {isAdmin ? "200 audits refreshed daily" : "Audits allowance & limits"}
+              {isAdmin ? "450 audits refreshed daily" : "Audits allowance & limits"}
             </p>
           </div>
         </div>

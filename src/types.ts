@@ -400,12 +400,15 @@ export interface OdJob {
   dataSources?: Record<string, "measured" | "estimated" | "computed">;
   isPartial?: boolean;
   noOpportunity?: boolean;
+  nonAuditableReason?: string;
   score?: number;
   grade?: string;
   takeaways?: OdTakeaways;
   pdfPath?: string;
   pdfName?: string;
   pdfBase64?: string;
+  pdfDeleted?: boolean;
+  pdfDeletedAt?: string;
   error?: string;
   callbackAttempts: number;
   autoRetryCount?: number;
@@ -423,6 +426,7 @@ export interface OdQueueStatus {
   partial: number;
   failed: number;
   undelivered: number;
+  undeliveredAlertCount?: number;
   maxConcurrency: number;
 }
 

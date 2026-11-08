@@ -60,6 +60,7 @@ export function SendToOutreachModal({
   const [category, setCategory] = useState("General Website");
   const [location, setLocation] = useState("");
   const [takeaways, setTakeaways] = useState("");
+  const [slotId, setSlotId] = useState<"A" | "B" | "C" | "D" | "E">("A");
   const [enrollAutopilot, setEnrollAutopilot] = useState(true);
 
   const [loading, setLoading] = useState(false);
@@ -100,6 +101,7 @@ export function SendToOutreachModal({
         category: category.trim() || "General Website",
         location: location.trim() || undefined,
         audit_key_takeaways: takeaways.trim(),
+        slot_id: slotId,
         enroll_autopilot: enrollAutopilot,
         result,
       });
@@ -392,6 +394,36 @@ export function SendToOutreachModal({
                 <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-teal-200/70 text-teal-900 shrink-0">
                   A4 Diagnostic
                 </span>
+              </div>
+
+              {/* 5-Slot Dispatch Channel Selector (A through E) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-teal-600" />
+                    <span>Outreach Dispatch Slot (5-Slot Architecture)</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-normal">
+                    Assigned Slot: <strong className="text-teal-700 font-bold">Slot {slotId}</strong>
+                  </span>
+                </label>
+                <div className="grid grid-cols-5 gap-2">
+                  {(["A", "B", "C", "D", "E"] as const).map((slot) => (
+                    <button
+                      key={slot}
+                      type="button"
+                      onClick={() => setSlotId(slot)}
+                      className={`py-2 text-xs font-bold rounded-xl border transition cursor-pointer flex flex-col items-center justify-center ${
+                        slotId === slot
+                          ? "bg-teal-600 text-white border-teal-600 shadow-xs"
+                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                      }`}
+                    >
+                      <span>Slot {slot}</span>
+                      <span className="text-[9px] opacity-75 font-normal">Worker {slot}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Autopilot Checkbox */}

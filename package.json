@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "lint": "eslint .",
+    "lint": "eslint . && npm run lint:audit-ssrf",
+    "lint:audit-ssrf": "node -e 'const fs=require(\"fs\"); const c=fs.readFileSync(\"server/auditRunner.ts\",\"utf8\"); if(/\\bfetch\\s*\\(/.test(c)){console.error(\"LINT FAILED: Raw fetch() call detected in server/auditRunner.ts! All outbound requests must use safeFetchWithSsrfCheck.\"); process.exit(1);} console.log(\"LINT PASSED: Zero raw fetch() calls in audit engine.\");'",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "supabase:login": "supabase login",

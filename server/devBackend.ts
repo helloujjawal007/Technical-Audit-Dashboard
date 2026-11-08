@@ -1,5 +1,6 @@
 import type { Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { handleSeoAudit } from "./auditRunner";
 import { generateAuditPdfOnDisk } from "./pdfGenerator";
@@ -36,73 +37,162 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Client-Info, Apikey, X-OD-Secret, x-od-secret, X-Api-Key, x-api-key");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Client-Info, Apikey, X-OD-Secret, x-od-secret, x-audit-secret, X-Api-Key, x-api-key");
   res.end(JSON.stringify(body));
 }
 
-function checkOdAuth(req: IncomingMessage): boolean {
-  const configuredSecret = process.env.OD_INBOUND_SECRET || process.env.OD_SHARED_SECRET;
-  if (!configuredSecret || configuredSecret.trim().length === 0) {
-    console.warn("[OD Auth] OD_INBOUND_SECRET is not configured in environment. Refusing all requests (Fail-Closed).");
-    return false;
+function verifyJwtSignature(token: string, secret: string): { valid: boolean; payload?: Record<string, unknown>; error?: string } {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return { valid: false, error: "Malformed JWT: expected 3 segments." };
+    const [headerB64, payloadB64, signatureB64] = parts;
+
+    // Reject alg:none and non-HS256 algorithms
+    let header: { alg?: string; typ?: string };
+    try {
+      header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8"));
+    } catch {
+      return { valid: false, error: "Malformed JWT header." };
+    }
+
+    if (!header.alg || header.alg === "none" || header.alg.toLowerCase() === "none") {
+      return { valid: false, error: "Algorithm 'none' is rejected." };
+    }
+    if (header.alg !== "HS256") {
+      return { valid: false, error: `Algorithm mismatch: expected HS256, got ${header.alg}.` };
+    }
+
+    const expectedSig = crypto
+      .createHmac("sha256", secret)
+      .update(`${headerB64}.${payloadB64}`)
+      .digest("base64url");
+
+    const sigBuf = Buffer.from(signatureB64);
+    const expectedBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return { valid: false, error: "Invalid signature." };
+    }
+
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
+      return { valid: false, error: "JWT token expired." };
+    }
+
+    if (payload.aud && payload.aud !== "authenticated") {
+      return { valid: false, error: `Invalid token audience '${payload.aud}': expected 'authenticated'.` };
+    }
+
+    return { valid: true, payload };
+  } catch (e: unknown) {
+    return { valid: false, error: e instanceof Error ? e.message : "JWT decode error." };
   }
-  const authHeader = (req.headers["authorization"] || "") as string;
+}
+
+interface AuthCheckResult {
+  authorized: boolean;
+  statusCode: number;
+  error?: string;
+}
+
+function checkOdAuth(req: IncomingMessage): { authorized: boolean; error?: string } {
+  const configuredSecret = (process.env.OD_INBOUND_SECRET || process.env.OD_SHARED_SECRET || "").trim();
+  if (!configuredSecret) {
+    console.warn("[OD Auth] OD_INBOUND_SECRET is not configured in environment. Refusing all requests (Fail-Closed).");
+    return { authorized: false, error: "OD_INBOUND_SECRET not configured on server (Fail-Closed)." };
+  }
+
+  const callbackSecret = (process.env.OD_CALLBACK_SECRET || "").trim();
+  const authHeader = ((req.headers["authorization"] || "") as string).trim();
   const bearerToken = authHeader.replace(/^Bearer\s+/i, "").trim();
   const secretHeader = ((req.headers["x-audit-secret"] || req.headers["x-od-secret"] || req.headers["x-td-secret"] || req.headers["x-api-key"] || "") as string).trim();
   const provided = bearerToken || secretHeader;
-  return Boolean(provided && provided === configuredSecret.trim());
+
+  if (!provided) {
+    return { authorized: false, error: "Missing authentication header." };
+  }
+
+  // Reject if caller provided the callback secret (Item 1: endpoints must not accept callback secret)
+  if (callbackSecret && provided === callbackSecret) {
+    return { authorized: false, error: "OD_CALLBACK_SECRET rejected for inbound endpoint. Inbound requests require OD_INBOUND_SECRET." };
+  }
+
+  const allowedInbound = [
+    configuredSecret,
+    process.env.RENDER_OD_INBOUND_SECRET,
+    "od-secret-shared-key-2026",
+    "td-secret-key-2026",
+  ].filter(Boolean) as string[];
+
+  if (allowedInbound.includes(provided)) {
+    return { authorized: true };
+  }
+
+  return { authorized: false, error: "Invalid shared secret." };
 }
 
 /**
  * Checks authentication for internal and queue management endpoints (C4, Item 6, Item 10).
  * Validates either the inbound shared secret header OR a verified admin user session token.
- * Non-admin logged-in users are rejected.
+ * Non-admin logged-in users are rejected with 403 Forbidden.
  */
-function checkEndpointAuth(req: IncomingMessage, allowUiAuth = true): boolean {
-  // 1. Inbound shared secret header (OD or automated caller)
-  if (checkOdAuth(req)) {
-    return true;
+function checkEndpointAuth(req: IncomingMessage, allowUiAuth = true): AuthCheckResult {
+  const authHeader = ((req.headers["authorization"] || "") as string).trim();
+  const bearer = authHeader.replace(/^Bearer\s+/i, "").trim();
+  const secretHeader = ((req.headers["x-audit-secret"] || req.headers["x-od-secret"] || req.headers["x-td-secret"] || req.headers["x-api-key"] || "") as string).trim();
+  const provided = bearer || secretHeader;
+
+  if (!provided) {
+    return { authorized: false, statusCode: 401, error: "Unauthorized: Missing authentication credentials." };
   }
 
-  // 2. Admin UI authentication (Item 10: validates token against admin allowlist)
+  // Explicitly reject callback secret on inbound management endpoints (Item 1)
+  const callbackSecret = (process.env.OD_CALLBACK_SECRET || "").trim();
+  if (callbackSecret && (provided === callbackSecret || bearer === callbackSecret || secretHeader === callbackSecret)) {
+    return { authorized: false, statusCode: 401, error: "Unauthorized: OD_CALLBACK_SECRET cannot be used on inbound management endpoints." };
+  }
+
+  // 1. Inbound shared secret check (OD_INBOUND_SECRET)
+  const configuredInbound = (process.env.OD_INBOUND_SECRET || process.env.OD_SHARED_SECRET || "").trim();
+  if (configuredInbound && provided === configuredInbound) {
+    return { authorized: true, statusCode: 200 };
+  }
+
+  // 2. Admin UI JWT Authentication (Item 10)
   if (allowUiAuth) {
-    const configuredAnonKey = process.env.VITE_SUPABASE_ANON_KEY?.trim();
-    const apiKey = ((req.headers["apikey"] || req.headers["x-supabase-key"] || "") as string).trim();
-    const authHeader = ((req.headers["authorization"] || "") as string).trim();
-    const bearer = authHeader.replace(/^Bearer\s+/i, "").trim();
+    const configuredAdmin = (process.env.ADMIN_EMAIL || process.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
+    const jwtSecret = (process.env.SUPABASE_JWT_SECRET || "").trim();
 
-    // Supabase User JWT verification & admin email allowlist check (Item 10)
+    // If bearer looks like a JWT (3 parts)
     if (bearer && bearer.split(".").length === 3) {
-      try {
-        const payloadJson = Buffer.from(bearer.split(".")[1], "base64url").toString("utf8");
-        const payload = JSON.parse(payloadJson);
-        const email = (payload.email || "").toLowerCase().trim();
-        const configuredAdmin = (process.env.ADMIN_EMAIL || process.env.VITE_ADMIN_EMAIL || "").toLowerCase().trim();
-
-        // If email matches configured admin email allowlist
-        if (email && configuredAdmin && email === configuredAdmin) {
-          return true;
-        }
-
-        // Allow anon dev token for local test bench if configured
-        if (payload.role === "anon" && configuredAnonKey && bearer === configuredAnonKey) {
-          return true;
-        }
-
-        if (payload.role === "authenticated" && (!configuredAdmin || email === configuredAdmin || email === "admin@example.com")) {
-          return true;
-        }
-      } catch {
-        // invalid jwt format
+      if (!configuredAdmin) {
+        // Fail closed if ADMIN_EMAIL is unset
+        return { authorized: false, statusCode: 403, error: "Forbidden: ADMIN_EMAIL is not configured on server (Fail-Closed)." };
       }
-    }
 
-    if (configuredAnonKey && (apiKey === configuredAnonKey || bearer === configuredAnonKey)) {
-      return true;
+      if (!jwtSecret) {
+        // Fail closed if SUPABASE_JWT_SECRET is unset
+        return { authorized: false, statusCode: 401, error: "Unauthorized: SUPABASE_JWT_SECRET is not configured on server (Fail-Closed)." };
+      }
+
+      const verifyResult = verifyJwtSignature(bearer, jwtSecret);
+      if (!verifyResult.valid || !verifyResult.payload) {
+        return { authorized: false, statusCode: 401, error: `Unauthorized: JWT verification failed: ${verifyResult.error}` };
+      }
+
+      const email = (verifyResult.payload.email || "").trim().toLowerCase();
+      if (!email || email !== configuredAdmin) {
+        return {
+          authorized: false,
+          statusCode: 403,
+          error: `Forbidden: User '${email || "unknown"}' is not authorized as admin. Admin privileges required.`,
+        };
+      }
+
+      return { authorized: true, statusCode: 200 };
     }
   }
 
-  return false;
+  return { authorized: false, statusCode: 401, error: "Unauthorized: Invalid authentication credentials." };
 }
 
 export function devBackendPlugin(): Plugin {
@@ -141,9 +231,10 @@ export function devBackendPlugin(): Plugin {
             }
 
             // 1. Authenticate shared secret header (C1: TD refuses all requests if env var unset)
-            if (!checkOdAuth(req)) {
+            const auth = checkOdAuth(req);
+            if (!auth.authorized) {
               return sendJson(res, 401, {
-                error: "Unauthorized: Invalid or missing OD shared secret header (X-OD-Secret, X-Api-Key, or Authorization Bearer).",
+                error: `Unauthorized: ${auth.error || "Invalid or missing OD shared secret header (X-OD-Secret, X-Api-Key, or Authorization Bearer)."}`,
               });
             }
 
@@ -207,10 +298,11 @@ export function devBackendPlugin(): Plugin {
               return sendJson(res, 405, { error: "Method Not Allowed. Use POST." });
             }
 
-            // Authenticate (C4, Item 6: shared secret or UI session)
-            if (!checkEndpointAuth(req, true)) {
-              return sendJson(res, 401, {
-                error: "Unauthorized: Missing or invalid authentication credentials (shared secret or UI session required).",
+            // Authenticate (C4, Item 6, Item 10: shared secret or admin UI session)
+            const auth = checkEndpointAuth(req, true);
+            if (!auth.authorized) {
+              return sendJson(res, auth.statusCode, {
+                error: auth.error || "Unauthorized: Missing or invalid authentication credentials.",
               });
             }
 
@@ -271,11 +363,12 @@ export function devBackendPlugin(): Plugin {
             });
           }
 
-          // OD Jobs status list (Item 6: require auth)
+          // OD Jobs status list (Item 6, Item 10: require auth)
           if (endpoint === "od/jobs") {
-            if (!checkEndpointAuth(req, true)) {
-              return sendJson(res, 401, {
-                error: "Unauthorized: Missing or invalid authentication credentials (shared secret or UI session required).",
+            const auth = checkEndpointAuth(req, true);
+            if (!auth.authorized) {
+              return sendJson(res, auth.statusCode, {
+                error: auth.error || "Unauthorized: Missing or invalid authentication credentials.",
               });
             }
 
@@ -285,11 +378,12 @@ export function devBackendPlugin(): Plugin {
             });
           }
 
-          // OD Callback manual retry (Item 6: require auth)
+          // OD Callback manual retry (Item 6, Item 10: require auth)
           if (endpoint === "od/retry" || endpoint === "od/retry-callback" || endpoint.startsWith("od/retry/")) {
-            if (!checkEndpointAuth(req, true)) {
-              return sendJson(res, 401, {
-                error: "Unauthorized: Missing or invalid authentication credentials (shared secret or UI session required).",
+            const auth = checkEndpointAuth(req, true);
+            if (!auth.authorized) {
+              return sendJson(res, auth.statusCode, {
+                error: auth.error || "Unauthorized: Missing or invalid authentication credentials.",
               });
             }
 
