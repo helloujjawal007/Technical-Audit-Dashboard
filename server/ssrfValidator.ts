@@ -307,6 +307,15 @@ export function validateCallbackUrl(urlStr: string): { valid: boolean; error?: s
     return { valid: false, error: "Callback URL must use http: or https: protocol." };
   }
 
+  // Internet callbacks allow ONLY https:// callback URLs (Item 6)
+  const isLoopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1";
+  if (!isLoopback && parsed.protocol !== "https:") {
+    return {
+      valid: false,
+      error: "Security Violation: Internet callback URLs must use encrypted HTTPS protocol. Unencrypted HTTP is prohibited for external callbacks.",
+    };
+  }
+
   // Reject credentials in callback URLs
   if (parsed.username || parsed.password) {
     return { valid: false, error: "SSRF Protection: User credentials in callback URL are not permitted." };

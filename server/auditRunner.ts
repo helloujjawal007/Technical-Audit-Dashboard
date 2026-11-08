@@ -123,6 +123,9 @@ export function detectNonAuditablePage(
 
   // 3. Parked / For-Sale Domain Pages
   const isParked =
+    lowerHtml.includes("parked domain") ||
+    lowerHtml.includes("domain is parked") ||
+    lowerHtml.includes("domain parking") ||
     lowerHtml.includes("sedoparking") ||
     lowerHtml.includes("sedo domain parking") ||
     lowerHtml.includes("sedo.com") ||
@@ -1282,14 +1285,33 @@ async function auditSinglePage(
       throw new Error(`Target URL returned non-HTML binary or API content (${contentType.split(";")[0]}). Technical audits require an HTML web page.`);
     }
   } catch (e) {
+    if ((e as { nonAuditableReason?: string })?.nonAuditableReason) {
+      throw e;
+    }
     const cause = (e as { cause?: { code?: string; message?: string } })?.cause;
     const raw = `${e instanceof Error ? e.message : ""} ${cause?.code || ""} ${cause?.message || ""}`.trim();
+    if (raw.includes("CERT_") || raw.includes("TLS") || raw.includes("SSL") || raw.includes("certificate") || raw.includes("DEPTH_ZERO_SELF_SIGNED_CERT")) {
+      const certErr = Object.assign(
+        new Error(`SSL/TLS handshake failure: The target server SSL certificate is expired, invalid, or untrusted.`),
+        {
+          nonAuditableReason: "certificate-problem",
+          noOpportunity: true,
+        }
+      );
+      throw certErr;
+    }
     if (raw.includes("ENOTFOUND") || raw.includes("EAI_AGAIN") || raw.includes("getaddrinfo")) {
-      fetchError = `DNS lookup failed for ${targetUrl}. The domain does not resolve to an IP address or is parked.`;
-    } else if (raw.includes("timeout") || raw.includes("AbortError") || raw.includes("TIMEDOUT")) {
+      const dnsErr = Object.assign(
+        new Error(`DNS lookup failed for ${targetUrl}. The domain does not resolve to an IP address or is parked.`),
+        {
+          nonAuditableReason: "dead-dns",
+          noOpportunity: true,
+        }
+      );
+      throw dnsErr;
+    }
+    if (raw.includes("timeout") || raw.includes("AbortError") || raw.includes("TIMEDOUT")) {
       fetchError = `Connection timed out waiting for ${targetUrl}. The web server is unresponsive.`;
-    } else if (raw.includes("CERT_") || raw.includes("TLS") || raw.includes("SSL") || raw.includes("certificate") || raw.includes("DEPTH_ZERO_SELF_SIGNED_CERT")) {
-      fetchError = `SSL/TLS handshake failure: The target server SSL certificate is expired, invalid, or untrusted.`;
     } else {
       fetchError = raw || "Failed to fetch URL";
     }
@@ -1721,9 +1743,9 @@ async function auditSinglePage(
   if (favicon) checks.push({ id: "favicon", label: "Favicon", category: "technical", status: "pass", detail: "Favicon declared." });
   else checks.push({ id: "favicon", label: "Favicon", category: "technical", status: "info", detail: "No favicon link tag found." });
 
-  if (responseTimeMs < 500) checks.push({ id: "response-time", label: "Server Response Time", category: "technical", status: "pass", detail: `${responseTimeMs}ms. Excellent.` });
-  else if (responseTimeMs < 1000) checks.push({ id: "response-time", label: "Server Response Time", category: "technical", status: "warn", detail: `${responseTimeMs}ms. Aim for under 500ms.` });
-  else { checks.push({ id: "response-time", label: "Server Response Time", category: "technical", status: "fail", detail: `${responseTimeMs}ms. Slow.` }); recommendations.push({ priority: "high", title: "Improve Server Response Time", detail: `Server responded in ${responseTimeMs}ms. Aim for under 500ms.` }); }
+  if (responseTimeMs < 1000) checks.push({ id: "response-time", label: "Server Response Time", category: "technical", status: "pass", detail: `${responseTimeMs}ms (regional probe). Good.` });
+  else if (responseTimeMs < 1800) checks.push({ id: "response-time", label: "Server Response Time", category: "technical", status: "warn", detail: `${responseTimeMs}ms (regional probe). Acceptable for cross-region probe.` });
+  else { checks.push({ id: "response-time", label: "Server Response Time", category: "technical", status: "fail", detail: `${responseTimeMs}ms (regional probe). High latency exceeding 1.8s.` }); recommendations.push({ priority: "high", title: "Improve Server Response Time", detail: `Server took ${responseTimeMs}ms from regional probe. Deploy edge caching to reduce latency.` }); }
 
   if (htmlSizeBytes < 100000) checks.push({ id: "html-size", label: "HTML Page Size", category: "technical", status: "pass", detail: `${(htmlSizeBytes / 1024).toFixed(1)}KB. Good.` });
   else if (htmlSizeBytes < 200000) checks.push({ id: "html-size", label: "HTML Page Size", category: "technical", status: "warn", detail: `${(htmlSizeBytes / 1024).toFixed(1)}KB. Consider minifying.` });
@@ -1982,10 +2004,10 @@ async function auditSinglePage(
   else if (totalResources < 50) checks.push({ id: "perf-resources", label: "Total Resources", category: "performance", status: "warn", detail: `${totalResources} resources. Consider reducing.` });
   else { checks.push({ id: "perf-resources", label: "Total Resources", category: "performance", status: "fail", detail: `${totalResources} resources. Too many requests.` }); recommendations.push({ priority: "medium", title: "Reduce Resource Count", detail: `${totalResources} resources loaded. Bundle and reduce requests.` }); }
 
-  // Document request latency (server response time)
-  if (responseTimeMs < 600) checks.push({ id: "perf-server-latency", label: "Server Response Time (TTFB)", category: "performance", status: "pass", detail: `${responseTimeMs}ms TTFB. Good.` });
-  else if (responseTimeMs < 1500) checks.push({ id: "perf-server-latency", label: "Server Response Time (TTFB)", category: "performance", status: "warn", detail: `${responseTimeMs}ms TTFB. Aim for under 600ms.` });
-  else { checks.push({ id: "perf-server-latency", label: "Server Response Time (TTFB)", category: "performance", status: "fail", detail: `${responseTimeMs}ms TTFB. Slow.` }); recommendations.push({ priority: "high", title: "Improve TTFB", detail: `Server responded in ${responseTimeMs}ms. Aim for under 600ms.` }); }
+  // Document request latency (server response time - threshold adjusted for regional probe vantage)
+  if (responseTimeMs < 1000) checks.push({ id: "perf-server-latency", label: "Server Response Time (TTFB)", category: "performance", status: "pass", detail: `${responseTimeMs}ms TTFB (regional probe). Good.` });
+  else if (responseTimeMs < 1800) checks.push({ id: "perf-server-latency", label: "Server Response Time (TTFB)", category: "performance", status: "warn", detail: `${responseTimeMs}ms TTFB (regional probe). Acceptable for cross-region probe.` });
+  else { checks.push({ id: "perf-server-latency", label: "Server Response Time (TTFB)", category: "performance", status: "fail", detail: `${responseTimeMs}ms TTFB (regional probe). High latency.` }); recommendations.push({ priority: "high", title: "Improve TTFB", detail: `Server responded in ${responseTimeMs}ms from regional probe. Deploy edge caching.` }); }
 
   // Total network payload (HTML size as proxy)
   if (htmlSizeBytes < 50000) checks.push({ id: "perf-payload", label: "Network Payload", category: "performance", status: "pass", detail: `${(htmlSizeBytes / 1024).toFixed(1)}KB HTML payload.` });
@@ -2517,9 +2539,25 @@ async function auditSinglePage(
     };
   });
 
+  // Platform / CMS Detection (Item 8)
+  const rawHeadersStr = JSON.stringify(pageHeaders || {}).toLowerCase();
+  const lowerHtmlForCms = pageHtml.toLowerCase();
+  let detectedPlatform = "Custom";
+  if (lowerHtmlForCms.includes("wp-content") || lowerHtmlForCms.includes("wp-includes") || rawHeadersStr.includes("wordpress")) {
+    detectedPlatform = "WordPress";
+  } else if (lowerHtmlForCms.includes("cdn.shopify.com") || lowerHtmlForCms.includes("shopify-payment")) {
+    detectedPlatform = "Shopify";
+  } else if (lowerHtmlForCms.includes("static.wixstatic.com") || lowerHtmlForCms.includes("wix.com")) {
+    detectedPlatform = "Wix";
+  } else if (lowerHtmlForCms.includes("static1.squarespace.com") || lowerHtmlForCms.includes("squarespace.com")) {
+    detectedPlatform = "Squarespace";
+  } else if (lowerHtmlForCms.includes("__next") || lowerHtmlForCms.includes("/_next/")) {
+    detectedPlatform = "Next.js";
+  }
+
   return {
     url: targetUrl,
-    score, title, description, checks: filteredChecks, categoryScores, robotsContent, sitemapContent, sitemapUrl,
+    score, title, description, canonicalUrl: canonical, platform: detectedPlatform, checks: filteredChecks, categoryScores, robotsContent, sitemapContent, sitemapUrl,
     headers: pageHeaders,
     socialPreview: { ogTitle, ogDescription, ogImage, twitterCard, twitterTitle, twitterDescription, twitterImage },
     links: bodyLinks.slice(0, 100),
@@ -2555,6 +2593,7 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
     const BATCH_CONCURRENCY = 12;
     const results: AuditResult[] = [];
     let nextIdx = 0;
+    let rootError: unknown = null;
 
     const worker = async () => {
       while (nextIdx < rawUrls.length) {
@@ -2569,6 +2608,9 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
           });
           results.push(res as AuditResult);
         } catch (err) {
+          if (i === 0 || (err as { nonAuditableReason?: string })?.nonAuditableReason) {
+            rootError = err;
+          }
           console.warn(`Batch worker failed for ${target}:`, err);
         }
       }
@@ -2576,6 +2618,13 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
 
     const workers = Array.from({ length: Math.min(BATCH_CONCURRENCY, rawUrls.length) }, () => worker());
     await Promise.all(workers);
+
+    if (results.length === 0 && rootError) {
+      throw rootError;
+    }
+    if ((rootError as { nonAuditableReason?: string })?.nonAuditableReason && (!results[0] || results[0].url !== rawUrls[0])) {
+      throw rootError;
+    }
 
     // Cross-page duplicate & missing analysis
     const titleMap = new Map<string, string[]>();
@@ -2955,18 +3004,18 @@ export function generateOdTakeaways(options: {
     });
   }
 
-  // 2. TTFB (Measured hard number)
-  if (primaryTtfb > 600) {
+  // 2. TTFB (Measured hard number - raised threshold > 1500ms due to regional probe vantage in India, Item 2)
+  if (primaryTtfb > 1500) {
     candidates.push({
       id: "ttfb-latency",
       weight: 98,
-      severity: primaryTtfb > 1200 ? "critical" : "high",
-      finding: "Slow Server Response Time (TTFB)",
-      metric: `TTFB ${primaryTtfb}ms`,
+      severity: primaryTtfb > 2500 ? "critical" : "high",
+      finding: "Slow Server Response Time (TTFB > 1.5s)",
+      metric: `TTFB ${primaryTtfb}ms (regional probe)`,
       sampleSize: pagesAudited,
       source: "measured",
-      detail: `The origin web server took ${primaryTtfb}ms to return initial HTML bytes, failing Google TTFB guidance (under 200ms).`,
-      recommendation: "Deploy Server-Side Edge Caching (Cloudflare/Fastly) and optimize database queries to bring TTFB under 200ms.",
+      detail: `The origin web server took ${primaryTtfb}ms to return initial HTML bytes from regional probe. TTFB exceeding 1500ms indicates serious server latency or un-cached dynamic rendering that degrades crawl budget.`,
+      recommendation: "Deploy server-level page caching and CDN edge HTML caching to reduce initial response latency.",
     });
   }
 

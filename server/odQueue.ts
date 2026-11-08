@@ -389,7 +389,10 @@ async function executeOdJob(job: OdJob): Promise<void> {
           keyUrls = Array.from(new Set(selected)).slice(0, 8);
         }
         stagesFinished.push("crawl");
-      } catch (crawlErr) {
+      } catch (crawlErr: unknown) {
+        if ((crawlErr as { nonAuditableReason?: string })?.nonAuditableReason) {
+          throw crawlErr;
+        }
         console.warn(`[OD Queue ${job.id}] Crawl discovery had warning; falling back to single root URL:`, crawlErr);
         keyUrls = [rawUrl];
         stagesFinished.push("crawl");
@@ -591,6 +594,7 @@ async function executeOdJob(job: OdJob): Promise<void> {
         websiteUrl: rawUrl,
         result: primaryAudit,
         takeaways: takeaways.summaryText,
+        platform: primaryAudit.platform,
       });
 
       job.pdfPath = pdfRes.absolutePath;
@@ -612,6 +616,8 @@ async function executeOdJob(job: OdJob): Promise<void> {
     console.error(`[OD Queue ${job.id}] Job failed with error:`, errorMsg);
     job.status = "failed";
     job.error = errorMsg;
+    job.score = undefined;
+    job.grade = undefined;
     const customErr = err as { nonAuditableReason?: string; noOpportunity?: boolean } | null;
     if (customErr?.nonAuditableReason) {
       job.noOpportunity = true;
@@ -678,7 +684,7 @@ export async function dispatchOdCallback(job: OdJob): Promise<boolean> {
     status: job.status === "ready" || job.status === "partial" ? job.status : "failed",
     noOpportunity: Boolean(job.noOpportunity),
     reason: job.nonAuditableReason || null,
-    score: job.score || job.takeaways?.overallScore || (job.status === "failed" ? 0 : 50),
+    score: job.status === "failed" ? null : (job.score || job.takeaways?.overallScore || 50),
     takeaways: job.takeaways || null,
     findings: formattedFindings,
     pdf: job.pdfBase64 || null,
@@ -703,10 +709,7 @@ export async function dispatchOdCallback(job: OdJob): Promise<boolean> {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s strict timeout
 
-      let secret = (process.env.OD_CALLBACK_SECRET || process.env.OD_SHARED_SECRET || "").trim();
-      if (job.callbackUrl.includes("outreach-dashboard-22t5.onrender.com")) {
-        secret = (process.env.RENDER_OD_CALLBACK_SECRET || "td-secret-key-2026").trim();
-      }
+      const secret = (process.env.OD_CALLBACK_SECRET || "").trim();
       if (!secret) {
         job.callbackConfigError = "Configuration Error: OD_CALLBACK_SECRET is not configured in server environment (Fail-Closed).";
         job.callbackSuccess = false;

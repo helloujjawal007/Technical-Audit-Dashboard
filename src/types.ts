@@ -143,6 +143,8 @@ export interface AuditResult {
   score: number;
   title: string | null;
   description: string | null;
+  canonicalUrl?: string | null;
+  platform?: string;
   checks: CheckResult[];
   categoryScores: CategoryScore[];
   robotsContent: string | null;

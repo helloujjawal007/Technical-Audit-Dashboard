@@ -9,6 +9,7 @@ export interface GeneratePdfOptions {
   websiteUrl: string;
   result: Partial<AuditResult>;
   takeaways?: string;
+  platform?: string;
   outputDir?: string;
 }
 
@@ -89,10 +90,10 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
   const contactPhone = (process.env.CONSULTANCY_PHONE || "").trim();
   const contactWebsite = (process.env.CONSULTANCY_WEBSITE || "").trim();
 
-  const isInvalidOrPlaceholder = (val: string) => {
+  const isInvalidOrPlaceholder = (val: string, allowEmpty = false) => {
+    if (!val) return !allowEmpty;
     const lower = val.toLowerCase();
     return (
-      !val ||
       lower.includes("seo audit pro") ||
       lower.includes("seoauditpro") ||
       lower.includes("555-") ||
@@ -105,11 +106,11 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
   if (
     isInvalidOrPlaceholder(brandName) ||
     isInvalidOrPlaceholder(contactEmail) ||
-    isInvalidOrPlaceholder(contactPhone) ||
-    isInvalidOrPlaceholder(contactWebsite)
+    isInvalidOrPlaceholder(contactWebsite) ||
+    isInvalidOrPlaceholder(contactPhone, true) // Allow empty if phone is unconfirmed by user (Item 9)
   ) {
     throw new Error(
-      `PDF Branding Error: Consultancy brand name and real contact details must be configured via environment variables (CONSULTANCY_BRAND_NAME, CONSULTANCY_EMAIL, CONSULTANCY_PHONE, CONSULTANCY_WEBSITE). Fictional placeholders (e.g. 555 numbers, seoauditpro.com) are strictly rejected.`
+      `PDF Branding Error: Consultancy brand name and real contact details must be configured via environment variables (CONSULTANCY_BRAND_NAME, CONSULTANCY_EMAIL, CONSULTANCY_WEBSITE). Fictional placeholders are strictly rejected.`
     );
   }
 
@@ -373,20 +374,72 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
   });
   cursorY -= 15;
 
-  const solutions = [
-    {
-      title: "1. Next.js SSR & Cloudflare Edge Caching Overhaul",
-      desc: "Migrate legacy client-heavy pages to Server-Side Rendering (SSR) with global edge micro-caching to bring TTFB below 150ms.",
-    },
-    {
-      title: "2. JSON-LD Semantic Entity Graph Deployment",
-      desc: "Inject structured Organization, LocalBusiness, and Service graphs to establish domain authority and secure Google Rich Snippets.",
-    },
-    {
-      title: "3. Core Web Vitals Remediation & Next/Image Migration",
-      desc: "Implement explicit aspect ratios and modern AVIF/WebP image compression to eliminate Cumulative Layout Shift (CLS < 0.1).",
-    },
-  ];
+  // Platform-Aware Prescriptive Engineering Solutions (Item 8)
+  const platform = (options.platform || "").toLowerCase();
+  let solutions: { title: string; desc: string }[] = [];
+
+  if (platform.includes("wordpress") || platform.includes("wp")) {
+    solutions = [
+      {
+        title: "1. WordPress Page Caching & Cloudflare CDN Optimization",
+        desc: "Deploy server-level page caching (LiteSpeed Cache / WP Rocket) and Cloudflare edge asset caching to reduce initial response latency and optimize crawl efficiency.",
+      },
+      {
+        title: "2. Schema.org Semantic Entity Graph Injection",
+        desc: "Inject structured JSON-LD Organization, LocalBusiness, and Breadcrumb graphs via schema plugins or custom theme hooks for enhanced Google Rich Snippet visibility.",
+      },
+      {
+        title: "3. Core Web Vitals Remediation & Layout Stability",
+        desc: "Add explicit width/height dimensions to image containers and defer non-critical JavaScript to eliminate Cumulative Layout Shift (CLS) and improve mobile scores.",
+      },
+    ];
+  } else if (platform.includes("wix") || platform.includes("squarespace")) {
+    solutions = [
+      {
+        title: `1. ${platform.includes("wix") ? "Wix" : "Squarespace"} Asset & Script Optimization`,
+        desc: "Audit embedded third-party widgets, defer non-essential marketing tracking scripts, and optimize media gallery loading to accelerate page rendering.",
+      },
+      {
+        title: "2. Custom JSON-LD Structured Data Graph",
+        desc: "Deploy custom Organization, LocalBusiness, and Service structured schema markup into Advanced SEO settings to establish verified brand entity authority.",
+      },
+      {
+        title: "3. Mobile Layout & Responsive Dimension Containment",
+        desc: "Configure fixed container aspect ratios on dynamic image banners and hero sliders to prevent mobile layout shifts and enhance Core Web Vitals compliance.",
+      },
+    ];
+  } else if (platform.includes("shopify")) {
+    solutions = [
+      {
+        title: "1. Shopify Theme Liquid & App Script Pruning",
+        desc: "Profile app impact on theme load times, defer unused app script tags, and optimize Shopify CDN image delivery to streamline critical rendering path.",
+      },
+      {
+        title: "2. E-Commerce Product & Organization Schema Graph",
+        desc: "Deploy rich JSON-LD Product, AggregateRating, and Store structured data graphs in theme liquid templates for enhanced commercial search snippets.",
+      },
+      {
+        title: "3. Collection Image Sizing & Layout Shift Prevention",
+        desc: "Apply explicit aspect ratios to product grid containers and preload above-the-fold hero images to achieve fast, stable Largest Contentful Paint (LCP).",
+      },
+    ];
+  } else {
+    // Custom / Next.js / Modern Stacks
+    solutions = [
+      {
+        title: "1. Server-Side Rendering (SSR) & Edge Caching Overhaul",
+        desc: "Optimize critical server response pipelines and deploy global edge caching to minimize TTFB and maximize Google crawl budget efficiency.",
+      },
+      {
+        title: "2. JSON-LD Semantic Entity Graph Deployment",
+        desc: "Inject structured Organization, LocalBusiness, and Service graphs to establish verified domain authority and secure Google Rich Snippets.",
+      },
+      {
+        title: "3. Core Web Vitals Remediation & Image Optimization",
+        desc: "Implement explicit aspect ratios and modern WebP/AVIF image formats to prevent Cumulative Layout Shift and ensure smooth mobile rendering.",
+      },
+    ];
+  }
 
   for (const sol of solutions) {
     page.drawRectangle({
@@ -423,7 +476,7 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     cursorY -= 56;
   }
 
-  // 6. Footer & Consultancy Contact Details (Item 13)
+  // 6. Footer & Consultancy Contact Details (Item 9, Item 13)
   cursorY = 55;
   page.drawLine({
     start: { x: 40, y: cursorY + 15 },
@@ -440,7 +493,13 @@ export async function generateAuditPdfOnDisk(options: GeneratePdfOptions): Promi
     color: darkNavy,
   });
 
-  drawSafeText(`Email: ${contactEmail}   |   Tel: ${contactPhone}   |   Web: ${contactWebsite}`, {
+  const footerContact = [
+    `Email: ${contactEmail}`,
+    contactPhone ? `Tel: ${contactPhone}` : null,
+    `Web: ${contactWebsite}`,
+  ].filter(Boolean).join("   |   ");
+
+  drawSafeText(footerContact, {
     x: 40,
     y: cursorY - 11,
     size: 7,

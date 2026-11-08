@@ -33,6 +33,7 @@ interface AuthPageProps {
   onGuestLogin: () => void;
   isRecoveryMode?: boolean;
   onRecoveryComplete?: () => void;
+  onPasswordResetSuccess?: () => void;
   initialError?: string | null;
   onClearInitialError?: () => void;
 }
@@ -105,10 +106,25 @@ function normalizeAuthEmail(val: string): string {
   const trimmed = val.trim().toLowerCase();
   if (!trimmed) return "";
   if (!trimmed.includes("@")) {
-    const adminEmail = (import.meta.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
-    if (adminEmail && adminEmail.split("@")[0] === trimmed) {
-      return adminEmail;
+    const adminEmails = (import.meta.env.VITE_ADMIN_EMAIL || "")
+      .trim()
+      .toLowerCase()
+      .split(",")
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+
+    // If typing "admin" or "superadmin", map directly to primary configured admin email
+    if (trimmed === "admin" || trimmed === "superadmin") {
+      if (adminEmails.length > 0) return adminEmails[0];
+      return "admin@example.com";
     }
+
+    for (const configured of adminEmails) {
+      if (configured.split("@")[0] === trimmed) {
+        return configured;
+      }
+    }
+
     return `${trimmed}@gmail.com`;
   }
   return trimmed;
@@ -126,6 +142,7 @@ export function AuthPage({
   onGuestLogin,
   isRecoveryMode = false,
   onRecoveryComplete,
+  onPasswordResetSuccess,
   initialError,
   onClearInitialError,
 }: AuthPageProps) {
@@ -156,6 +173,11 @@ export function AuthPage({
   const [isManualCode, setIsManualCode] = useState(false);
   const [activeSessionEmail, setActiveSessionEmail] = useState<string | null>(null);
   const [directResetUrl, setDirectResetUrl] = useState<string | null>(null);
+
+  // Magic Link OTP code states
+  const [magicSent, setMagicSent] = useState(false);
+  const [magicOtp, setMagicOtp] = useState("");
+  const [magicVerifying, setMagicVerifying] = useState(false);
 
   // Status & Feedback
   const [loading, setLoading] = useState(false);
@@ -260,6 +282,9 @@ export function AuthPage({
     setUnconfirmedEmail(null);
     setAgreeTerms(false);
     setDirectResetUrl(null);
+    setMagicSent(false);
+    setMagicOtp("");
+    setMagicVerifying(false);
     clearErrors();
   };
 
@@ -355,6 +380,14 @@ export function AuthPage({
         } else {
           setError(signUpError.message);
         }
+        return;
+      }
+
+      // Supabase GoTrue returns empty identities when email is already registered (email enumeration defense)
+      if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        setError("An account with this email address already exists. Please sign in or reset your password.");
+        setStep("signin");
+        setEmail(cleanEmail);
         return;
       }
 
@@ -497,20 +530,56 @@ export function AuthPage({
       const { error: magicError } = await supabase.auth.signInWithOtp({
         email: cleanEmail,
         options: {
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: `${window.location.origin}/`,
         },
       });
 
       if (magicError) {
         setError(magicError.message);
       } else {
-        setInfo(`Magic link sent! Check your inbox at ${cleanEmail} and click the link to sign in.`);
+        setMagicSent(true);
+        setInfo(`Magic link & 6-digit code sent to ${cleanEmail}! Check your inbox (or spam) to click the link, or enter the 6-digit code below to log in immediately:`);
       }
     } catch (err) {
       console.error("Magic link error:", err);
       setError("Failed to send magic link. Please check your connection and try again.");
     } finally {
       setMagicLoading(false);
+    }
+  };
+
+  const handleVerifyMagicOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (magicVerifying || !magicOtp.trim()) return;
+
+    clearErrors();
+    const cleanEmail = normalizeAuthEmail(email);
+    const token = magicOtp.trim();
+
+    if (!token) {
+      setError("Please enter the 6-digit verification code from your email.");
+      return;
+    }
+
+    setMagicVerifying(true);
+
+    try {
+      const { error: otpError } = await supabase.auth.verifyOtp({
+        email: cleanEmail,
+        token: token,
+        type: "email",
+      });
+
+      if (otpError) {
+        setError(otpError.message || "Invalid or expired verification code. Please request a new one.");
+      } else {
+        setInfo("Code verified successfully! Welcome to SEO Audit Pro.");
+      }
+    } catch (err) {
+      console.error("Verify magic OTP error:", err);
+      setError("Failed to verify code. Please check your connection and try again.");
+    } finally {
+      setMagicVerifying(false);
     }
   };
 
@@ -524,6 +593,12 @@ export function AuthPage({
 
     if (!cleanInput) {
       setFieldErrors({ email: "Email or username is required." });
+      emailRef.current?.focus();
+      return;
+    }
+
+    if (!isValidStrictEmail(cleanEmail)) {
+      setFieldErrors({ email: "Please enter a valid email address (e.g. you@example.com)." });
       emailRef.current?.focus();
       return;
     }
@@ -693,6 +768,7 @@ export function AuthPage({
         sessionStorage.removeItem("supabase_auth_recovery_active");
       } catch { /* ignore */ }
 
+      onPasswordResetSuccess?.();
       onRecoveryComplete?.();
       setInfo("Password updated successfully! Welcome back to SEO Audit Pro.");
     } catch (err: unknown) {
@@ -955,19 +1031,67 @@ export function AuthPage({
                   <div className="flex-1 h-px bg-slate-200" />
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleMagicLink}
-                  disabled={magicLoading || !email.trim()}
-                  className="w-full mt-2 rounded-2xl border border-slate-200 py-3 font-semibold text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40 transition flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  {magicLoading ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Wand2 className="w-3.5 h-3.5 text-teal-600" />
-                  )}
-                  <span>Sign In with Email Magic Link</span>
-                </button>
+                {magicSent ? (
+                  <div className="mt-2 p-3.5 rounded-2xl bg-teal-50/70 border border-teal-200/90 space-y-2.5 animate-fade-in">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-teal-800">
+                      <KeyRound className="w-3.5 h-3.5 text-teal-600" />
+                      <span>Enter 6-Digit Email Code</span>
+                    </div>
+                    <p className="text-[11px] text-teal-700 leading-relaxed">
+                      You can click the link in your email, or enter the 6-digit verification code sent to your inbox to log in immediately:
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={magicOtp}
+                        onChange={(e) => setMagicOtp(e.target.value)}
+                        placeholder="123456"
+                        maxLength={8}
+                        className="flex-1 px-3 py-2 rounded-xl border border-teal-300 bg-white text-sm font-mono tracking-widest text-center focus:outline-none focus:ring-2 focus:ring-teal-500/20 text-slate-800"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleVerifyMagicOtp}
+                        disabled={magicVerifying || !magicOtp.trim()}
+                        className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs disabled:opacity-50 transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                      >
+                        {magicVerifying && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                        <span>Verify & Enter</span>
+                      </button>
+                    </div>
+                    <div className="flex justify-between items-center pt-0.5 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={handleMagicLink}
+                        disabled={magicLoading}
+                        className="text-teal-700 hover:underline font-semibold cursor-pointer"
+                      >
+                        Resend Code
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMagicSent(false)}
+                        className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleMagicLink}
+                    disabled={magicLoading || !email.trim()}
+                    className="w-full mt-2 rounded-2xl border border-slate-200 py-3 font-semibold text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40 transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {magicLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="w-3.5 h-3.5 text-teal-600" />
+                    )}
+                    <span>Sign In with Email Magic Link</span>
+                  </button>
+                )}
               </div>
 
               <p className="text-center text-xs text-slate-500 pt-1">
@@ -1373,20 +1497,6 @@ export function AuthPage({
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}
                 <span>Send Reset Link</span>
               </button>
-
-              <div className="text-center pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStep("reset");
-                    setIsManualCode(true);
-                    clearErrors();
-                  }}
-                  className="text-xs text-slate-500 hover:text-teal-600 font-semibold underline cursor-pointer"
-                >
-                  Have a verification code? Enter code manually
-                </button>
-              </div>
             </form>
           )}
 
@@ -1406,8 +1516,8 @@ export function AuthPage({
                     {email}
                   </strong>
                 </p>
-                <p className="text-[11px] text-slate-400 max-w-xs mx-auto pt-1">
-                  Click the button in that email to set your new password. If you don't see it within a minute, check your spam or junk folder.
+                <p className="text-xs text-slate-500 max-w-xs mx-auto pt-1 leading-relaxed">
+                  Click the <strong>Reset password</strong> button in that email. It will bring you directly back to this browser to set your new password.
                 </p>
               </div>
 
@@ -1445,20 +1555,6 @@ export function AuthPage({
                 >
                   <LogIn className="w-3.5 h-3.5" />
                   <span>Return to Sign In</span>
-                </button>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStep("reset");
-                    setIsManualCode(true);
-                    clearErrors();
-                  }}
-                  className="text-xs text-slate-500 hover:text-teal-600 font-semibold underline cursor-pointer"
-                >
-                  Have a verification code? Enter code manually
                 </button>
               </div>
             </div>

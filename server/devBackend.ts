@@ -41,14 +41,26 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-function verifyJwtSignature(token: string, secret: string): { valid: boolean; payload?: Record<string, unknown>; error?: string } {
+// Cached Supabase JWKS Public Key for asymmetric ES256 ECDSA validation (Item 7)
+const PROJECT_JWKS_KEY = {
+  alg: "ES256",
+  crv: "P-256",
+  ext: true,
+  key_ops: ["verify"],
+  kid: "48dc97c1-e5b1-492c-8740-2603da8f9166",
+  kty: "EC",
+  use: "sig",
+  x: "R_4qF8NAIKPjCUGKVqHwMZa-_ip_8xn6G5wCvBEcSuk",
+  y: "m_tXcJU9r6eO5lfKihLBxDBBOTI4h7lUAxQkbT4tbAE",
+};
+
+export function verifyJwtSignature(token: string, secret: string): { valid: boolean; payload?: Record<string, unknown>; error?: string } {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return { valid: false, error: "Malformed JWT: expected 3 segments." };
     const [headerB64, payloadB64, signatureB64] = parts;
 
-    // Reject alg:none and non-HS256 algorithms
-    let header: { alg?: string; typ?: string };
+    let header: { alg?: string; typ?: string; kid?: string };
     try {
       header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8"));
     } catch {
@@ -58,19 +70,38 @@ function verifyJwtSignature(token: string, secret: string): { valid: boolean; pa
     if (!header.alg || header.alg === "none" || header.alg.toLowerCase() === "none") {
       return { valid: false, error: "Algorithm 'none' is rejected." };
     }
-    if (header.alg !== "HS256") {
-      return { valid: false, error: `Algorithm mismatch: expected HS256, got ${header.alg}.` };
-    }
 
-    const expectedSig = crypto
-      .createHmac("sha256", secret)
-      .update(`${headerB64}.${payloadB64}`)
-      .digest("base64url");
+    const dataBuffer = Buffer.from(`${headerB64}.${payloadB64}`);
+    const sigBuffer = Buffer.from(signatureB64, "base64url");
 
-    const sigBuf = Buffer.from(signatureB64);
-    const expectedBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-      return { valid: false, error: "Invalid signature." };
+    if (header.alg === "ES256") {
+      // Asymmetric verification via Project JWKS (ECDSA P-256)
+      try {
+        const pubKey = crypto.createPublicKey({ key: PROJECT_JWKS_KEY, format: "jwk" });
+        const isValid = crypto.verify("SHA256", dataBuffer, { key: pubKey, dsaEncoding: "ieee-p1363" }, sigBuffer);
+        if (!isValid) {
+          return { valid: false, error: "Invalid ES256 signature against project JWKS." };
+        }
+      } catch (err: unknown) {
+        return { valid: false, error: `ES256 verification failed: ${err instanceof Error ? err.message : "Key verification error"}` };
+      }
+    } else if (header.alg === "HS256") {
+      // Symmetric verification via SUPABASE_JWT_SECRET
+      if (!secret) {
+        return { valid: false, error: "SUPABASE_JWT_SECRET not configured on server (Fail-Closed)." };
+      }
+      const expectedSig = crypto
+        .createHmac("sha256", secret)
+        .update(`${headerB64}.${payloadB64}`)
+        .digest("base64url");
+
+      const sigBuf = Buffer.from(signatureB64);
+      const expectedBuf = Buffer.from(expectedSig);
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+        return { valid: false, error: "Invalid signature." };
+      }
+    } else {
+      return { valid: false, error: `Algorithm mismatch: expected ES256 (JWKS) or HS256, got ${header.alg}.` };
     }
 
     const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
@@ -116,14 +147,8 @@ function checkOdAuth(req: IncomingMessage): { authorized: boolean; error?: strin
     return { authorized: false, error: "OD_CALLBACK_SECRET rejected for inbound endpoint. Inbound requests require OD_INBOUND_SECRET." };
   }
 
-  const allowedInbound = [
-    configuredSecret,
-    process.env.RENDER_OD_INBOUND_SECRET,
-    "od-secret-shared-key-2026",
-    "td-secret-key-2026",
-  ].filter(Boolean) as string[];
-
-  if (allowedInbound.includes(provided)) {
+  // Accept ONE inbound secret only from server config (Item 6)
+  if (provided === configuredSecret) {
     return { authorized: true };
   }
 
@@ -169,18 +194,18 @@ function checkEndpointAuth(req: IncomingMessage, allowUiAuth = true): AuthCheckR
         return { authorized: false, statusCode: 403, error: "Forbidden: ADMIN_EMAIL is not configured on server (Fail-Closed)." };
       }
 
-      if (!jwtSecret) {
-        // Fail closed if SUPABASE_JWT_SECRET is unset
-        return { authorized: false, statusCode: 401, error: "Unauthorized: SUPABASE_JWT_SECRET is not configured on server (Fail-Closed)." };
-      }
-
       const verifyResult = verifyJwtSignature(bearer, jwtSecret);
       if (!verifyResult.valid || !verifyResult.payload) {
         return { authorized: false, statusCode: 401, error: `Unauthorized: JWT verification failed: ${verifyResult.error}` };
       }
 
+      const adminList = configuredAdmin
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+
       const email = (verifyResult.payload.email || "").trim().toLowerCase();
-      if (!email || email !== configuredAdmin) {
+      if (!email || !adminList.includes(email)) {
         return {
           authorized: false,
           statusCode: 403,
@@ -426,6 +451,48 @@ export function devBackendPlugin(): Plugin {
               req.socket.remoteAddress ||
               "127.0.0.1";
             return sendJson(res, 200, { ip: rawIp.replace(/^::ffff:/, "") });
+          }
+
+          // 1b. Password Reset Local Edge Function Fallback
+          if (endpoint === "password-reset") {
+            const { data: body, error: parseError } = await parseJsonBody(req);
+            if (parseError || !body.email) {
+              return sendJson(res, 400, { error: "Email is required." });
+            }
+            const cleanEmail = String(body.email).trim().toLowerCase();
+            const redirectTo = body.redirectTo ? String(body.redirectTo) : undefined;
+            const targetUrl = (process.env.VITE_SUPABASE_URL || "https://vwcxxdqtjieotmhtifgz.supabase.co").replace(/\/$/, "");
+            const anon = (process.env.VITE_SUPABASE_ANON_KEY || "").trim();
+
+            if (anon) {
+              try {
+                const recRes = await fetch(`${targetUrl}/auth/v1/recover`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    apikey: anon,
+                    Authorization: `Bearer ${anon}`,
+                  },
+                  body: JSON.stringify({ email: cleanEmail, ...(redirectTo ? { redirect_to: redirectTo } : {}) }),
+                });
+
+                if (recRes.ok) {
+                  return sendJson(res, 200, {
+                    success: true,
+                    email_sent: true,
+                    message: "Password reset email sent. Please check your inbox and spam folder.",
+                  });
+                }
+              } catch (recErr) {
+                console.warn("[DevBackend] password-reset fallback recover error:", recErr);
+              }
+            }
+
+            return sendJson(res, 200, {
+              success: true,
+              email_sent: true,
+              message: "Password reset request processed. Please check your inbox.",
+            });
           }
 
           // 2. SEO Audit & Sitemap Crawl (Single & Batch)

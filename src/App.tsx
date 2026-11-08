@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, lazy, Suspense } from "react"
 import { AlertCircle, Loader2, History, Ghost, BarChart3, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
-import { isSystemAdminUser } from "@/lib/admin";
+import { isSuperAdminUser } from "@/lib/admin";
 import { invokeEdgeFunction } from "@/lib/api";
 import { AuditForm } from "@/components/AuditForm";
 import { HistoryList } from "@/components/HistoryList";
@@ -27,6 +27,7 @@ const AuthPage = lazy(() => import("@/components/AuthPage").then((m) => ({ defau
 const SiteDashboardView = lazy(() => import("@/components/SiteDashboardView").then((m) => ({ default: m.SiteDashboardView })));
 const AllHistoryModal = lazy(() => import("@/components/AllHistoryModal").then((m) => ({ default: m.AllHistoryModal })));
 const StealthQueueModal = lazy(() => import("@/components/StealthQueueModal").then((m) => ({ default: m.StealthQueueModal })));
+const AccountModal = lazy(() => import("@/components/AccountModal").then((m) => ({ default: m.AccountModal })));
 const OdJobsView = lazy(() => import("@/components/OdJobsView").then((m) => ({ default: m.OdJobsView })));
 
 function normalizeUrl(raw: string): string {
@@ -55,10 +56,24 @@ function App() {
     clearAuthUrlError,
     emailVerifiedWelcome,
     clearEmailVerifiedWelcome,
+    isMagicLinkRedirect,
+    clearMagicLinkRedirect,
     passwordResetSuccess,
     clearPasswordResetSuccess,
+    notifyPasswordResetSuccess,
   } = useAuth();
+
+  const isSuperAdmin = Boolean(subscription?.tier === "admin" || isSuperAdminUser(user));
+  const isAdmin = isSuperAdmin;
+
   const [activeNav, setActiveNav] = useState<NavPage>("audit");
+
+  // Guard: Audit Studio is visible to any user, but other pages (Site Dashboard, OD Queue) are visible to Super Admin only.
+  useEffect(() => {
+    if (!isAdmin && activeNav !== "audit") {
+      setActiveNav("audit");
+    }
+  }, [isAdmin, activeNav]);
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [selected, setSelected] = useState<AuditRow | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
@@ -78,6 +93,8 @@ function App() {
   const [view, setView] = useState<"single" | "crawl">("single");
 
   const [showAllHistory, setShowAllHistory] = useState(false);
+  const [showAccountModal, setShowAccountModal] = useState(false);
+  const [initialPromptSetPassword, setInitialPromptSetPassword] = useState(false);
   const [creditError, setCreditError] = useState<string | null>(null);
   const [guestCredits, setGuestCredits] = useState<number | null>(null);
 
@@ -96,6 +113,15 @@ function App() {
   const [stealthActiveCount, setStealthActiveCount] = useState(0);
   const [odActiveCount, setOdActiveCount] = useState(0);
   const [crawlTotalDiscovered, setCrawlTotalDiscovered] = useState<number | null>(null);
+
+  // When user signs in via Magic Link, automatically prompt them to set their account password
+  useEffect(() => {
+    if (isMagicLinkRedirect && user) {
+      setShowAccountModal(true);
+      setInitialPromptSetPassword(true);
+      clearMagicLinkRedirect();
+    }
+  }, [isMagicLinkRedirect, user, clearMagicLinkRedirect]);
 
   useEffect(() => {
     const checkOd = async () => {
@@ -755,6 +781,7 @@ function App() {
           onGuestLogin={signInAsGuest}
           isRecoveryMode={isRecovery}
           onRecoveryComplete={clearRecovery}
+          onPasswordResetSuccess={notifyPasswordResetSuccess}
           initialError={authUrlError}
           onClearInitialError={clearAuthUrlError}
         />
@@ -764,7 +791,6 @@ function App() {
 
   const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Guest";
   const isGuest = Boolean(!user && guest);
-  const isAdmin = subscription?.tier === "admin" || isSystemAdminUser(user);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
@@ -776,6 +802,10 @@ function App() {
         guestCredits={guestCredits}
         activeNav={activeNav}
         onNavChange={setActiveNav}
+        onOpenAccount={() => {
+          setInitialPromptSetPassword(false);
+          setShowAccountModal(true);
+        }}
         onOpenHistory={() => setShowAllHistory(true)}
         onOpenStealthQueue={() => setStealthQueueOpen(true)}
         stealthActiveCount={stealthActiveCount}
@@ -817,8 +847,8 @@ function App() {
           </div>
         )}
 
-        {/* OD Queue Mode */}
-        {activeNav === "od-jobs" && (
+        {/* OD Queue Mode (Super Admin Only) */}
+        {activeNav === "od-jobs" && isAdmin && (
           <Suspense
             fallback={
               <div className="flex items-center justify-center py-24">
@@ -830,8 +860,8 @@ function App() {
           </Suspense>
         )}
 
-        {/* Site Dashboard Mode */}
-        {activeNav === "site-dashboard" && (
+        {/* Site Dashboard Mode (Super Admin Only) */}
+        {activeNav === "site-dashboard" && isAdmin && (
           <Suspense
             fallback={
               <div className="flex items-center justify-center py-24">
@@ -856,8 +886,8 @@ function App() {
           </Suspense>
         )}
 
-        {/* Primary Audit Studio */}
-        {activeNav === "audit" && (
+        {/* Primary Audit Studio (Accessible to Any User) */}
+        {(activeNav === "audit" || !isAdmin) && (
           <div className="space-y-6">
             <section className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
               {/* Audit form card */}
@@ -987,7 +1017,7 @@ function App() {
                   isCrawling={isCrawling}
                   paused={paused}
                   totalDiscoveredUrls={crawlTotalDiscovered || undefined}
-                  onOpenStealthQueue={() => setStealthQueueOpen(true)}
+                  onOpenStealthQueue={isAdmin ? () => setStealthQueueOpen(true) : undefined}
                 />
               ) : result && selected ? (
                 <ResultsView
@@ -995,7 +1025,7 @@ function App() {
                   url={selected.url}
                   auditId={selected.id}
                   onDelete={() => handleDelete(selected.id)}
-                  onCreateSiteDashboard={() => setActiveNav("site-dashboard")}
+                  onCreateSiteDashboard={isAdmin ? () => setActiveNav("site-dashboard") : undefined}
                 />
               ) : error ? (
                 <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-in">
@@ -1018,6 +1048,22 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* Account & Password Settings Modal */}
+      {showAccountModal && (
+        <Suspense fallback={null}>
+          <AccountModal
+            isOpen={showAccountModal}
+            onClose={() => setShowAccountModal(false)}
+            user={user}
+            userName={userName}
+            userEmail={user?.email || null}
+            isAdmin={isAdmin}
+            tier={subscription?.tier || "free"}
+            initialPromptSetPassword={initialPromptSetPassword}
+          />
+        </Suspense>
+      )}
 
       {/* Stealth Mode Queue Modal */}
       {stealthQueueOpen && (

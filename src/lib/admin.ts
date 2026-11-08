@@ -3,8 +3,20 @@ export function isSystemAdminUser(
 ): boolean {
   if (!userCandidate) return false;
   const adminEmailConfig = (import.meta.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
-  const email = (userCandidate.email || "").trim().toLowerCase();
-  if (adminEmailConfig && email === adminEmailConfig) return true;
+  const configuredAdmins = adminEmailConfig
+    .split(",")
+    .map((s: string) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  const email = (
+    userCandidate.email ||
+    (typeof userCandidate.user_metadata?.email === "string" ? userCandidate.user_metadata.email : "") ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (email && configuredAdmins.includes(email)) return true;
 
   const hashStr = (str: string) => {
     let hash = 0;
@@ -24,4 +36,27 @@ export function isSystemAdminUser(
     (userCandidate.id ? hashStr(userCandidate.id) === "9u4m84" : false)
   );
 }
+
+export function isSuperAdminUser(
+  userCandidate?: {
+    email?: string | null;
+    id?: string;
+    user_metadata?: Record<string, unknown>;
+    app_metadata?: Record<string, unknown>;
+  } | null
+): boolean {
+  if (!userCandidate) return false;
+  const role = (
+    (userCandidate.user_metadata?.role as string) ||
+    (userCandidate.app_metadata?.role as string) ||
+    ""
+  ).toLowerCase();
+
+  if (role === "super_admin" || role === "superadmin") {
+    return true;
+  }
+
+  return isSystemAdminUser(userCandidate);
+}
+
 

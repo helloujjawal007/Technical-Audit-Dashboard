@@ -130,15 +130,22 @@ export function detectNonAuditablePage(
 
   // 3. Parked / For-Sale Domain Pages
   const isParked =
+    lowerHtml.includes("parked domain") ||
+    lowerHtml.includes("domain is parked") ||
+    lowerHtml.includes("domain parking") ||
     lowerHtml.includes("sedoparking") ||
     lowerHtml.includes("sedo domain parking") ||
+    lowerHtml.includes("sedo.com") ||
     lowerHtml.includes("hugedomains.com") ||
-    (lowerHtml.includes("this domain is for sale") && (lowerHtml.includes("buy") || lowerHtml.includes("domain") || lowerHtml.includes("godaddy") || lowerHtml.includes("dan.com"))) ||
-    (lowerHtml.includes("dan.com") && lowerHtml.includes("this domain is available for sale")) ||
-    (lowerHtml.includes("this domain is parked, free, courtesy of godaddy") || (lowerHtml.includes("parked domain") && lowerHtml.includes("godaddy"))) ||
-    (lowerHtml.includes("domain parking") && lowerHtml.includes("inquire about this domain")) ||
+    lowerHtml.includes("hugedomains") ||
+    lowerHtml.includes("dan.com") ||
+    lowerHtml.includes("afternic.com") ||
     lowerHtml.includes("bodis.com") ||
-    lowerHtml.includes("undeveloped.com");
+    lowerHtml.includes("undeveloped.com") ||
+    ((lowerHtml.includes("domain is for sale") || lowerHtml.includes("domain is available") || lowerHtml.includes("buy this domain")) &&
+      (lowerHtml.includes("buy") || lowerHtml.includes("inquire") || lowerHtml.includes("purchase") || lowerHtml.includes("godaddy") || lowerHtml.includes("dan.com") || lowerHtml.includes("sedo"))) ||
+    lowerHtml.includes("this domain is parked") ||
+    lowerHtml.includes("domain parked free");
 
   if (isParked) {
     return {

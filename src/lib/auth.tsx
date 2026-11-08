@@ -23,8 +23,11 @@ export interface AuthContextValue {
   authUrlError: string | null;
   emailVerifiedWelcome: boolean;
   clearEmailVerifiedWelcome: () => void;
+  isMagicLinkRedirect: boolean;
+  clearMagicLinkRedirect: () => void;
   passwordResetSuccess: boolean;
   clearPasswordResetSuccess: () => void;
+  notifyPasswordResetSuccess: () => void;
   clearAuthUrlError: () => void;
   clearRecovery: () => void;
   refreshSubscription: () => Promise<void>;
@@ -61,6 +64,17 @@ function checkIsEmailVerifiedRedirect(): boolean {
     search.includes("type=signup") ||
     hash.includes("type=email_change") ||
     search.includes("type=email_change")
+  );
+}
+
+function checkIsMagicLinkRedirect(): boolean {
+  if (typeof window === "undefined") return false;
+  const hash = window.location.hash || "";
+  const search = window.location.search || "";
+  return (
+    hash.includes("type=magiclink") ||
+    search.includes("type=magiclink") ||
+    search.includes("magic_link=true")
   );
 }
 
@@ -101,6 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [guest, setGuest] = useState<GuestInfo | null>(null);
   const [authUrlError, setAuthUrlError] = useState<string | null>(() => extractUrlAuthError());
   const [emailVerifiedWelcome, setEmailVerifiedWelcome] = useState<boolean>(() => checkIsEmailVerifiedRedirect());
+  const [isMagicLinkRedirect, setIsMagicLinkRedirect] = useState<boolean>(() => checkIsMagicLinkRedirect());
   const [passwordResetSuccess, setPasswordResetSuccess] = useState<boolean>(false);
   const [isRecovery, setIsRecovery] = useState<boolean>(() => {
     // If there is an auth error, don't trap the user in reset mode
@@ -116,8 +131,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setEmailVerifiedWelcome(false);
   }, []);
 
+  const clearMagicLinkRedirect = useCallback(() => {
+    setIsMagicLinkRedirect(false);
+  }, []);
+
   const clearPasswordResetSuccess = useCallback(() => {
     setPasswordResetSuccess(false);
+  }, []);
+
+  const notifyPasswordResetSuccess = useCallback(() => {
+    setPasswordResetSuccess(true);
   }, []);
 
   const clearRecovery = useCallback(() => {
@@ -131,6 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         url.searchParams.delete("reset");
         url.searchParams.delete("type");
         url.searchParams.delete("recovery");
+        url.hash = "";
         window.history.replaceState(null, "", url.pathname + (url.search ? url.search : ""));
       } catch {
         window.history.replaceState(null, "", window.location.pathname);
@@ -216,6 +240,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (checkIsEmailVerifiedRedirect()) {
           setEmailVerifiedWelcome(true);
         }
+        if (checkIsMagicLinkRedirect()) {
+          setIsMagicLinkRedirect(true);
+        }
       }
 
       if (event === "USER_UPDATED") {
@@ -299,8 +326,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         authUrlError,
         emailVerifiedWelcome,
         clearEmailVerifiedWelcome,
+        isMagicLinkRedirect,
+        clearMagicLinkRedirect,
         passwordResetSuccess,
         clearPasswordResetSuccess,
+        notifyPasswordResetSuccess,
         clearAuthUrlError,
         clearRecovery,
         refreshSubscription,

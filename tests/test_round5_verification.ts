@@ -45,6 +45,7 @@ import {
   type OdJob,
 } from "../server/odQueue.ts";
 import { handleSeoAudit, detectNonAuditablePage, generateOdTakeaways, stripHtml } from "../server/auditRunner.ts";
+import { verifyJwtSignature } from "../server/devBackend.ts";
 
 const PSQL_BIN = "/opt/homebrew/Cellar/postgresql@16/16.11/bin/psql";
 const PSQL_USER = "ujjawal";
@@ -89,51 +90,6 @@ function maskSecret(val: string): string {
   return `...${val.slice(-4)}`;
 }
 
-function verifyJwtSignature(token: string, secret: string): { valid: boolean; payload?: Record<string, unknown>; error?: string } {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return { valid: false, error: "Malformed JWT: expected 3 segments." };
-    const [headerB64, payloadB64, signatureB64] = parts;
-
-    let header: { alg?: string; typ?: string };
-    try {
-      header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8"));
-    } catch {
-      return { valid: false, error: "Malformed JWT header." };
-    }
-
-    if (!header.alg || header.alg === "none" || header.alg.toLowerCase() === "none") {
-      return { valid: false, error: "Algorithm 'none' is rejected." };
-    }
-    if (header.alg !== "HS256") {
-      return { valid: false, error: `Algorithm mismatch: expected HS256, got ${header.alg}.` };
-    }
-
-    const expectedSig = crypto
-      .createHmac("sha256", secret)
-      .update(`${headerB64}.${payloadB64}`)
-      .digest("base64url");
-
-    const sigBuf = Buffer.from(signatureB64);
-    const expectedBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-      return { valid: false, error: "Invalid signature." };
-    }
-
-    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
-    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
-      return { valid: false, error: "JWT token expired." };
-    }
-
-    if (payload.aud && payload.aud !== "authenticated") {
-      return { valid: false, error: `Invalid token audience '${payload.aud}': expected 'authenticated'.` };
-    }
-
-    return { valid: true, payload };
-  } catch (e: unknown) {
-    return { valid: false, error: e instanceof Error ? e.message : "JWT decode error." };
-  }
-}
 
 function createTestJwt(payload: any, secret: string, header: any = { alg: "HS256", typ: "JWT" }): string {
   const hB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
@@ -471,10 +427,12 @@ export async function main() {
       });
 
       const topIssues = takeaways.topIssues.map((t) => t.id).join(", ") || "None";
-      console.log(`| ${b.leadId} | ${b.name} | ${b.url} | ${b.platform} | ready | ${takeaways.overallScore} | ${takeaways.grade} | ${topIssues} |`);
+      const statusStr = takeaways.noOpportunity ? "ready (noOpportunity: true)" : "ready";
+      console.log(`| ${b.leadId} | ${b.name} | ${b.url} | ${b.platform} | ${statusStr} | ${takeaways.overallScore} | ${takeaways.grade} | ${topIssues} |`);
     } catch (err: any) {
       // RULE: Failed audits MUST NOT show score or grade (NULL/NULL)
-      console.log(`| ${b.leadId} | ${b.name} | ${b.url} | ${b.platform} | failed | NULL | NULL | ${err.message.slice(0, 45)}... |`);
+      const reasonLabel = err.nonAuditableReason ? `failed: ${err.nonAuditableReason}` : "failed";
+      console.log(`| ${b.leadId} | ${b.name} | ${b.url} | ${b.platform} | ${reasonLabel} | NULL | NULL | ${err.message.slice(0, 45)}... |`);
     }
   }
 
@@ -678,9 +636,9 @@ export async function main() {
   const pdfBuf = fs.readFileSync(pdfResult.absolutePath);
   const pdfStr = pdfBuf.toString("utf-8");
   const hasCloudConsultancy = pdfStr.includes("Cloud Consultancy");
-  const hasSalesEmail = pdfStr.includes("sales@cloudconsultancy.in");
+  const hasConsultancyEmail = pdfStr.includes("cloudconsultancy.ad@gmail.com");
   console.log(`  PDF Contains 'Cloud Consultancy': ${hasCloudConsultancy ? "YES" : "NO"}`);
-  console.log(`  PDF Contains 'sales@cloudconsultancy.in': ${hasSalesEmail ? "YES" : "NO"}`);
+  console.log(`  PDF Contains 'cloudconsultancy.ad@gmail.com': ${hasConsultancyEmail ? "YES" : "NO"}`);
 
   // 3. 2-Hour PDF Auto-Deletion on a Real File
   console.log("\n--- Testing 2-Hour PDF Auto-Deletion on Real File ---");
@@ -723,7 +681,7 @@ export async function main() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-audit-secret": "td-secret-key-2026",
+        "x-audit-secret": (process.env.OD_CALLBACK_SECRET || "").trim(),
       },
       body: JSON.stringify({ ping: true }),
     });
