@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { handleSeoAudit, generateOdTakeaways } from "./auditRunner";
 import { generateAuditPdfOnDisk } from "./pdfGenerator";
+import { buildClientSeoAuditReport } from "../src/lib/seoReportBuilder";
 import { redactUrl, safeFetchWithSsrfCheck } from "./ssrfValidator";
 import type { OdAuditRequest, OdJob, OdQueueStatus, AuditResult } from "../src/types";
 
@@ -384,9 +385,10 @@ async function executeOdJob(job: OdJob): Promise<void> {
           });
           const other = discovered.filter((u) => !highPriority.includes(u));
 
-          // Cap outreach audit crawl to key pages (up to 8-10 pages total)
+          // Audit at least 50 pages if available on the website (or all discovered pages if fewer)
+          const TARGET_AUDIT_PAGES = Math.max(50, Number(process.env.OD_AUDIT_MAX_PAGES) || 50);
           const selected = [rawUrl, ...highPriority, ...other];
-          keyUrls = Array.from(new Set(selected)).slice(0, 8);
+          keyUrls = Array.from(new Set(selected)).slice(0, TARGET_AUDIT_PAGES);
         }
         stagesFinished.push("crawl");
       } catch (crawlErr: unknown) {
@@ -454,6 +456,8 @@ async function executeOdJob(job: OdJob): Promise<void> {
     // ---------------------------------------------------------
     const s3Start = Date.now();
     let measuredLcpSec: number | undefined = undefined;
+    let measuredInpMs: number | undefined = undefined;
+    let measuredClsScore: number | undefined = undefined;
     let measuredPsiScore: number | undefined = undefined;
     if (isTimeAvailable() && primaryAudit) {
       try {
@@ -465,10 +469,21 @@ async function executeOdJob(job: OdJob): Promise<void> {
         clearTimeout(psiTimeout);
         if (psiRes.ok) {
           const psiData = await psiRes.json();
-          const lcpMs = psiData?.lighthouseResult?.audits?.["largest-contentful-paint"]?.numericValue;
+          const audits = psiData?.lighthouseResult?.audits;
+          const lcpMs = audits?.["largest-contentful-paint"]?.numericValue;
+          const inpMs =
+            audits?.["interaction-to-next-paint"]?.numericValue ??
+            audits?.["experimental-interaction-to-next-paint"]?.numericValue;
+          const clsVal = audits?.["cumulative-layout-shift"]?.numericValue;
           const score = psiData?.lighthouseResult?.categories?.performance?.score;
           if (typeof lcpMs === "number") {
             measuredLcpSec = Number((lcpMs / 1000).toFixed(2));
+          }
+          if (typeof inpMs === "number") {
+            measuredInpMs = Math.round(inpMs);
+          }
+          if (typeof clsVal === "number") {
+            measuredClsScore = Number(clsVal.toFixed(3));
           }
           if (typeof score === "number") {
             measuredPsiScore = Math.round(score * 100);
@@ -579,6 +594,24 @@ async function executeOdJob(job: OdJob): Promise<void> {
       measuredPsiScore,
     });
 
+    const psiMetrics = {
+      lcpSec: measuredLcpSec,
+      inpMs: measuredInpMs,
+      clsScore: measuredClsScore,
+      performanceScore: measuredPsiScore,
+    };
+
+    const clientReport = buildClientSeoAuditReport({
+      websiteUrl: rawUrl,
+      businessName: job.company || new URL(rawUrl).hostname.replace(/^www\./, ""),
+      platform: primaryAudit.platform,
+      primaryResult: primaryAudit,
+      batchResults: batchAudits,
+      duplicatesSummary,
+      psiMetrics,
+    });
+    takeaways.clientReport = clientReport;
+
     job.score = takeaways.overallScore;
     job.grade = takeaways.grade;
     job.takeaways = takeaways;
@@ -586,15 +619,24 @@ async function executeOdJob(job: OdJob): Promise<void> {
     job.isPartial = isPartial;
     job.status = isPartial ? "partial" : "ready";
 
-    // Generate PDF with pdf-lib on disk
+    // Generate PDF with pdf-lib on disk (using unique lead-specific filename to prevent collision among concurrent agents)
     try {
+      const cleanDomain = new URL(rawUrl).hostname.replace(/^www\./, "");
+      const safeLeadId = String(job.leadId).replace(/[^a-zA-Z0-9_-]/g, "");
+      const pdfFilename = `${cleanDomain}_lead_${safeLeadId}_technical_audit.pdf`;
+
       const pdfRes = await generateAuditPdfOnDisk({
-        domain: new URL(rawUrl).hostname.replace(/^www\./, ""),
-        businessName: job.company || new URL(rawUrl).hostname.replace(/^www\./, ""),
+        domain: cleanDomain,
+        businessName: job.company || cleanDomain,
         websiteUrl: rawUrl,
         result: primaryAudit,
+        batchResults: batchAudits,
+        duplicatesSummary,
+        psiMetrics,
+        report: clientReport,
         takeaways: takeaways.summaryText,
         platform: primaryAudit.platform,
+        filename: pdfFilename,
       });
 
       job.pdfPath = pdfRes.absolutePath;

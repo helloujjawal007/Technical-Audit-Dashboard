@@ -170,6 +170,21 @@ export interface AuditResult {
   contentRecommendations: ContentRecommendation[];
   keywordMetrics: KeywordMetric[];
   customAudit?: CustomAuditData;
+  redirectChain?: string[];
+  urlStructure?: {
+    pathDepth: number;
+    hasUppercase: boolean;
+    hasUnderscores: boolean;
+    hasQueryParams: boolean;
+    hasBreadcrumbs: boolean;
+    hasPagination: boolean;
+  };
+  wwwConsistency?: {
+    checked: boolean;
+    consistent: boolean;
+    detail: string;
+  };
+  clientReport?: ClientSeoAuditReport;
 }
 
 export interface AuditRow {
@@ -362,6 +377,87 @@ export interface OdTakeawayItem {
   recommendation: string;
 }
 
+export type TechnicalAuditArea =
+  | "Crawlability & Indexability"
+  | "Website Architecture & Internal Linking"
+  | "Website Performance & Core Web Vitals"
+  | "On-Page Technical SEO"
+  | "Structured Data & Schema"
+  | "Mobile SEO"
+  | "Website Security"
+  | "International & Local SEO"
+  | "Additional Technical Issues";
+
+export type AuditIssuePriority = "High" | "Medium" | "Low";
+
+export interface ClientAuditIssue {
+  id: string;
+  issueName: string;
+  area: TechnicalAuditArea;
+  findingType: "Confirmed Issue" | "Optimization Recommendation";
+  description: string;
+  affectedUrlsCount: number;
+  exampleAffectedUrls: string[];
+  seoImpact: string;
+  recommendedSolution: string;
+  priority: AuditIssuePriority;
+  isQuickWin: boolean;
+  effortLabel: string;
+  impactScore: number;
+}
+
+export interface AreaHealthSummary {
+  area: TechnicalAuditArea;
+  status: "Healthy" | "Needs Attention" | "Critical" | "Info";
+  confirmedIssuesCount: number;
+  recommendationsCount: number;
+  quickWinsCount: number;
+  summary: string;
+}
+
+export interface ClientSeoAuditReport {
+  generatedAt: string;
+  domain: string;
+  websiteUrl: string;
+  businessName: string;
+  pagesAudited: number;
+  overallScore: number;
+  grade: string;
+  coreWebVitals: {
+    ttfbMs: number;
+    lcpSec?: number;
+    lcpSource: "measured" | "estimated";
+    inpMs?: number;
+    inpSource: "measured" | "unavailable";
+    clsScore?: number;
+    clsRiskCount: number;
+    clsSource: "measured" | "estimated";
+    performanceScore?: number;
+    htmlSizeKb: number;
+  };
+  executiveSummary: string;
+  healthOverview: {
+    summary: string;
+    areaBreakdown: AreaHealthSummary[];
+    confirmedIssuesTotal: number;
+    recommendationsTotal: number;
+    quickWinsTotal: number;
+  };
+  detailedFindings: ClientAuditIssue[];
+  criticalIssues: ClientAuditIssue[];
+  actionPlan: {
+    quickWinsFirst: ClientAuditIssue[];
+    mediumTermFixes: ClientAuditIssue[];
+    longerTermEngineering: ClientAuditIssue[];
+  };
+  roadmap: {
+    phase1QuickWins: { title: string; timeline: string; items: ClientAuditIssue[] };
+    phase2HighMedium: { title: string; timeline: string; items: ClientAuditIssue[] };
+    phase3LongTerm: { title: string; timeline: string; items: ClientAuditIssue[] };
+  };
+  finalRecommendations: string[];
+}
+
 export interface OdTakeaways {
   overallScore: number;
   grade: "A+" | "A" | "B" | "C" | "D" | "F";
@@ -371,6 +467,7 @@ export interface OdTakeaways {
   pagesAudited: number;
   noOpportunity?: boolean;
   dataSources: Record<string, "measured" | "estimated" | "computed">;
+  clientReport?: ClientSeoAuditReport;
   metrics: {
     ttfbMs: number;
     estimatedLcpSec?: number;
@@ -380,8 +477,17 @@ export interface OdTakeaways {
     missingH1Count: number;
     duplicateTitlesCount: number;
     duplicateDescCount: number;
+    duplicateH1Count?: number;
     schemaCount: number;
     httpsRedirect: boolean;
+    pagesWithoutInternalLinks?: number;
+    pagesWithoutExternalLinks?: number;
+    externalLinksWithoutNofollow?: number;
+    internalLinksWithNofollow?: number;
+    totalInternalLinks?: number;
+    totalExternalLinks?: number;
+    totalDofollowLinks?: number;
+    totalNofollowLinks?: number;
   };
 }
 

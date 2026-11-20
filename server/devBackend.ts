@@ -2,6 +2,7 @@ import type { Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { handleSeoAudit } from "./auditRunner";
 import { generateAuditPdfOnDisk } from "./pdfGenerator";
 import { enqueueOdJob, getAllOdJobs, getOdQueueStatus, retryJobCallback } from "./odQueue";
@@ -508,17 +509,44 @@ export function devBackendPlugin(): Plugin {
             return sendJson(res, 200, result);
           }
 
-          // 3. Generate Audit PDF on Disk
+          // 3. Generate & Download Audit PDF on Disk
           if (endpoint === "generate-pdf") {
+            if (req.method === "GET") {
+              const reqUrl = new URL(req.url || "/", "http://localhost");
+              const requestedPath = reqUrl.searchParams.get("path") || "";
+              const resolved = path.resolve(requestedPath);
+              const allowedReportsDir = path.resolve(process.cwd(), "reports");
+              const allowedTmpDir = path.resolve("/tmp/reports");
+              const isAllowed =
+                (resolved.startsWith(allowedReportsDir + path.sep) || resolved.startsWith(allowedTmpDir + path.sep)) &&
+                resolved.endsWith(".pdf") &&
+                fs.existsSync(resolved);
+
+              if (!isAllowed) {
+                return sendJson(res, 404, { error: "PDF report not found." });
+              }
+              const pdfBuf = fs.readFileSync(resolved);
+              res.statusCode = 200;
+              res.setHeader("Content-Type", "application/pdf");
+              res.setHeader("Content-Disposition", `inline; filename="${path.basename(resolved)}"`);
+              return res.end(pdfBuf);
+            }
+
             const { data: body } = await parseJsonBody(req);
             const pdfRes = await generateAuditPdfOnDisk({
               domain: String(body.domain || body.website_url || "domain.com"),
               businessName: String(body.business_name || body.businessName || body.domain || "Client"),
               websiteUrl: String(body.website_url || body.websiteUrl || body.url || ""),
               result: (body.result as Partial<AuditResult>) || {},
+              batchResults: Array.isArray(body.batchResults) ? (body.batchResults as Partial<AuditResult>[]) : undefined,
+              duplicatesSummary: body.duplicatesSummary as Parameters<typeof generateAuditPdfOnDisk>[0]["duplicatesSummary"],
+              report: body.report as import("../src/types").ClientSeoAuditReport | undefined,
               takeaways: (body.audit_key_takeaways || body.takeaways) as string | undefined,
             });
-            return sendJson(res, 200, pdfRes);
+            return sendJson(res, 200, {
+              ...pdfRes,
+              downloadUrl: `/functions/v1/generate-pdf?path=${encodeURIComponent(pdfRes.absolutePath)}`,
+            });
           }
 
           // 4. Outreach Bridge: Import Lead into Outreach Dashboard (localhost:5001)

@@ -1,9 +1,10 @@
 import { useState, useMemo } from "react";
-import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, ExternalLink, Search, Pause, ListFilter, AlertTriangle, Link2, Zap, ChevronLeft, Wrench, Copy } from "lucide-react";
+import { Download, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, FileSpreadsheet, FileText, ExternalLink, Search, Pause, ListFilter, AlertTriangle, Link2, Zap, ChevronLeft, Wrench, Copy } from "lucide-react";
 import type { CrawlPageResult, AuditResult, CheckResult } from "@/types";
 import { scoreColor, CATEGORY_META, STATUS_META } from "@/types";
 import { generateCrawlCsv, downloadCsv, downloadExcel, generateIssueCsv, generateDuplicateMissingCsv } from "@/lib/csv";
 import { ResultsView } from "@/components/ResultsView";
+import { ClientAuditReport } from "@/components/ClientAuditReport";
 import { CopyButton } from "@/components/CopyButton";
 import { ScoreGauge } from "@/components/ScoreGauge";
 import { SemrushFixModal } from "@/components/semrush/SemrushFixModal";
@@ -20,7 +21,7 @@ interface CrawlResultsViewProps {
   onOpenStealthQueue?: () => void;
 }
 
-type ViewMode = "urls" | "issues" | "duplicates-missing";
+type ViewMode = "urls" | "issues" | "duplicates-missing" | "client-report";
 
 type IssueGuidance = { explanation: string; fix: string };
 
@@ -512,8 +513,31 @@ export function CrawlResultsView({
             <Copy className="w-3.5 h-3.5" />
             Duplicates & Missing ({duplicatesAnalysis.totalDuplicatePages + missingsAnalysis.totalMissingPages})
           </button>
+          <button
+            onClick={() => setViewMode("client-report")}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+              viewMode === "client-report" ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Client Report (Quick Wins)
+          </button>
         </div>
       </div>
+
+      {/* Client-Ready Report (7 Sections + Quick Wins Prioritized) */}
+      {viewMode === "client-report" && completed.length > 0 && (
+        <ClientAuditReport
+          websiteUrl={baseUrl}
+          primaryResult={completed[0].result || {}}
+          batchResults={completed.map((p) => p.result).filter((r): r is AuditResult => Boolean(r))}
+          duplicatesSummary={{
+            duplicateTitles: duplicatesAnalysis.duplicateTitles,
+            duplicateDescriptions: duplicatesAnalysis.duplicateDescriptions,
+            duplicateH1s: duplicatesAnalysis.duplicateH1s,
+          }}
+        />
+      )}
 
       {/* URL view (original) */}
       {viewMode === "urls" && (

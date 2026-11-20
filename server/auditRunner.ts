@@ -789,13 +789,16 @@ async function checkLinkStatus(href: string, text: string): Promise<InternalLink
   const result: InternalLinkStatus = { href, text, status: null, redirect: null, error: null };
 
   try {
-    const { response: res, finalUrl } = await safeFetchWithSsrfCheck(href, {
+    const { response: res, finalUrl, redirectChain } = await safeFetchWithSsrfCheck(href, {
       method: "HEAD",
       headers: { "User-Agent": "SEO-Audit-Bot/1.0" },
       signal: AbortSignal.timeout(8000),
     });
 
-    if (res.status >= 300 && res.status < 400) {
+    if (redirectChain.length > 1 && finalUrl && finalUrl !== href) {
+      result.redirect = finalUrl;
+      result.status = res.status;
+    } else if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
       result.redirect = location ? resolveUrl(location, finalUrl || href) : null;
       result.status = res.status;
@@ -808,6 +811,48 @@ async function checkLinkStatus(href: string, text: string): Promise<InternalLink
 
   linkStatusCache.set(href, result);
   return result;
+}
+
+const wwwConsistencyCache = new Map<string, { checked: boolean; consistent: boolean; detail: string; timestamp: number }>();
+
+async function checkWwwConsistency(origin: string): Promise<{ checked: boolean; consistent: boolean; detail: string }> {
+  const now = Date.now();
+  const cached = wwwConsistencyCache.get(origin);
+  if (cached && now - cached.timestamp < ORIGIN_CACHE_TTL_MS) {
+    return { checked: cached.checked, consistent: cached.consistent, detail: cached.detail };
+  }
+
+  try {
+    const parsedOrigin = new URL(origin);
+    if (parsedOrigin.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(parsedOrigin.hostname)) {
+      const res = { checked: false, consistent: true, detail: "Local/IP host check skipped." };
+      wwwConsistencyCache.set(origin, { ...res, timestamp: now });
+      return res;
+    }
+    const altHost = parsedOrigin.hostname.startsWith("www.")
+      ? parsedOrigin.hostname.replace(/^www\./, "")
+      : `www.${parsedOrigin.hostname}`;
+    const altUrl = `${parsedOrigin.protocol}//${altHost}/`;
+
+    const { response: altRes, finalUrl } = await safeFetchWithSsrfCheck(altUrl, {
+      method: "HEAD",
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; ODS-AuditBot/2.0)" },
+      signal: AbortSignal.timeout(5000),
+    });
+    const finalHost = new URL(finalUrl || altUrl).hostname.toLowerCase();
+    const primaryHost = parsedOrigin.hostname.toLowerCase();
+    const consistent = finalHost === primaryHost;
+    const detail = consistent
+      ? `${altUrl} consistently redirects to canonical host ${primaryHost}.`
+      : `Both ${primaryHost} and ${finalHost} respond (HTTP ${altRes.status}) without 301 host canonicalization.`;
+    const out = { checked: true, consistent, detail };
+    wwwConsistencyCache.set(origin, { ...out, timestamp: now });
+    return out;
+  } catch {
+    const res = { checked: false, consistent: true, detail: "Alternate www/apex host did not respond independently." };
+    wwwConsistencyCache.set(origin, { ...res, timestamp: now });
+    return res;
+  }
 }
 
 async function checkInternalLinkStatuses(internalLinks: { href: string; text: string }[], maxLinks: number): Promise<InternalLinkStatus[]> {
@@ -1081,20 +1126,27 @@ interface CustomAuditData {
 }
 
 async function discoverCustomUrls(seedUrl: string, sitemapContent: string | null, sitemapUrl: string | null): Promise<string[]> {
-  if (sitemapContent && sitemapUrl) {
-    const crawled = await resolveAllSitemapUrls(sitemapContent, sitemapUrl);
-    if (crawled.urls.length > 1) return [...new Set(crawled.urls)].slice(0, 100);
-  }
-
   const seed = new URL(seedUrl);
   const seedHostname = normalizeHostname(seed.hostname);
   const seen = new Set<string>([seedUrl]);
   const queue = [seedUrl];
-  while (queue.length > 0 && seen.size < 50) {
-    const batch = queue.splice(0, 8);
+
+  if (sitemapContent && sitemapUrl) {
+    const crawled = await resolveAllSitemapUrls(sitemapContent, sitemapUrl);
+    if (crawled.urls.length >= 50) return [...new Set(crawled.urls)].slice(0, 100);
+    for (const u of crawled.urls) {
+      if (!seen.has(u) && seen.size < 100) {
+        seen.add(u);
+        queue.push(u);
+      }
+    }
+  }
+
+  while (queue.length > 0 && seen.size < 100) {
+    const batch = queue.splice(0, 10);
     const discovered = await Promise.all(batch.map(async (url) => {
       try {
-        const { response } = await safeFetchWithSsrfCheck(url, { headers: { "User-Agent": "SEO-Audit-Bot/1.0" }, signal: AbortSignal.timeout(7000) });
+        const { response } = await safeFetchWithSsrfCheck(url, { headers: { "User-Agent": "SEO-Audit-Bot/1.0" }, signal: AbortSignal.timeout(6000) });
         if (!response.ok) return [];
         const html = await response.text();
         const { document: doc } = parseHTML(html);
@@ -1103,7 +1155,7 @@ async function discoverCustomUrls(seedUrl: string, sitemapContent: string | null
           .filter((href) => href && /^https?:$/i.test(new URL(href).protocol) && normalizeHostname(new URL(href).hostname) === seedHostname);
       } catch { return []; }
     }));
-    for (const urls of discovered) for (const url of urls) if (!seen.has(url) && seen.size < 50) { seen.add(url); queue.push(url); }
+    for (const urls of discovered) for (const url of urls) if (!seen.has(url) && seen.size < 100) { seen.add(url); queue.push(url); }
   }
   return [...seen];
 }
@@ -1200,10 +1252,11 @@ async function auditSinglePage(
   let htmlSizeBytes = 0;
 
   let finalResolvedUrl = targetUrl;
+  let fetchedRedirectChain: string[] = [targetUrl];
 
   try {
     const start = Date.now();
-    const { response: res, finalUrl } = await safeFetchWithSsrfCheck(targetUrl, {
+    const { response: res, finalUrl, redirectChain } = await safeFetchWithSsrfCheck(targetUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (compatible; ODS-AuditBot/2.0)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -1217,6 +1270,7 @@ async function auditSinglePage(
     pageStatus = res.status;
     pageOk = res.ok;
     finalResolvedUrl = finalUrl || res.url || targetUrl;
+    fetchedRedirectChain = Array.isArray(redirectChain) && redirectChain.length > 0 ? redirectChain : [targetUrl];
     res.headers.forEach((v, k) => { pageHeaders[k.toLowerCase()] = v; });
     pageHtml = await res.text();
     htmlSizeBytes = pageHtml.length;
@@ -1322,7 +1376,21 @@ async function auditSinglePage(
 
   if (fetchError) throw new Error(fetchError);
 
-  if (finalResolvedUrl !== targetUrl) {
+  if (fetchedRedirectChain.length > 2) {
+    checks.push({
+      id: "redirect-chain",
+      label: "Redirect Chain",
+      category: "technical",
+      status: "warn",
+      detail: `Redirect chain of ${fetchedRedirectChain.length - 1} hops detected before final URL (${fetchedRedirectChain.join(" -> ")}).`,
+      value: fetchedRedirectChain.join("\n"),
+    });
+    recommendations.push({
+      priority: "medium",
+      title: "Collapse Multi-Hop Redirect Chain",
+      detail: `URL passes through ${fetchedRedirectChain.length - 1} redirects before resolving. Point directly to the final destination with a single 301 redirect.`,
+    });
+  } else if (finalResolvedUrl !== targetUrl) {
     checks.push({
       id: "redirect-followed",
       label: "Redirect Followed (301/302)",
@@ -1651,7 +1719,50 @@ async function auditSinglePage(
   else { checks.push({ id: "internal-links", label: "Internal Linking", category: "off-page", status: "fail", detail: "No internal links found." }); recommendations.push({ priority: "high", title: "Add Internal Links", detail: "No internal links found. Add links to related pages." }); }
 
   if (externalLinks.length > 0) checks.push({ id: "external-links", label: "External Links", category: "off-page", status: "pass", detail: `${externalLinks.length} external links found.` });
-  else checks.push({ id: "external-links", label: "External Links", category: "off-page", status: "info", detail: "No external links." });
+  else checks.push({ id: "external-links", label: "External Links", category: "off-page", status: "info", detail: "No external links found on this page." });
+
+  // Missing nofollow on external links & internal nofollow traps
+  const externalWithoutNofollow = externalLinks.filter(
+    (l) => !l.rel.includes("nofollow") && !l.rel.includes("sponsored") && !l.rel.includes("ugc")
+  );
+  if (externalWithoutNofollow.length > 0) {
+    checks.push({
+      id: "external-nofollow",
+      label: "External Links Nofollow Attribute",
+      category: "off-page",
+      status: "warn",
+      detail: `${externalWithoutNofollow.length} outbound link(s) lack rel="nofollow" or rel="sponsored" attributes.`,
+    });
+    recommendations.push({
+      priority: "low",
+      title: "Add rel='nofollow' to Outbound Links",
+      detail: `${externalWithoutNofollow.length} external links lack rel="nofollow". Add nofollow to commercial or untrusted outbound links.`,
+    });
+  } else if (externalLinks.length > 0) {
+    checks.push({
+      id: "external-nofollow",
+      label: "External Links Nofollow Attribute",
+      category: "off-page",
+      status: "pass",
+      detail: `All ${externalLinks.length} external links have rel="nofollow", "sponsored", or "ugc".`,
+    });
+  }
+
+  const internalWithNofollow = internalLinks.filter((l) => l.rel.includes("nofollow"));
+  if (internalWithNofollow.length > 0) {
+    checks.push({
+      id: "internal-nofollow-trap",
+      label: "Internal Links Nofollow Trap",
+      category: "off-page",
+      status: "warn",
+      detail: `${internalWithNofollow.length} internal link(s) contain rel="nofollow", which blocks crawlers from indexing internal content.`,
+    });
+    recommendations.push({
+      priority: "medium",
+      title: "Remove Nofollow from Internal Links",
+      detail: `${internalWithNofollow.length} internal link(s) contain rel="nofollow". Remove nofollow so search engines can discover internal content.`,
+    });
+  }
 
   checks.push({ id: "dofollow-links", label: "Dofollow Links", category: "off-page", status: "info", detail: `${dofollowLinks.length} dofollow links.` });
   checks.push({ id: "nofollow-links", label: "Nofollow Links", category: "off-page", status: "info", detail: `${nofollowLinks.length} nofollow links.` });
@@ -2140,6 +2251,7 @@ async function auditSinglePage(
       30,
     );
     const brokenLinks = internalLinkStatuses.filter((l) => l.status !== null && l.status >= 400);
+    const redirectedLinks = internalLinkStatuses.filter((l) => Boolean(l.redirect));
 
     if (brokenLinks.length > 0) {
       checks.push({
@@ -2162,6 +2274,30 @@ async function auditSinglePage(
         category: "technical",
         status: "pass",
         detail: `Verified ${internalLinkStatuses.length} internal links with no broken 404/500 responses.`,
+      });
+    }
+
+    if (redirectedLinks.length > 0) {
+      checks.push({
+        id: "redirected-internal-links",
+        label: "Redirected Internal Links",
+        category: "technical",
+        status: "warn",
+        detail: `${redirectedLinks.length} internal link(s) point to redirecting URLs instead of the final destination.`,
+        value: redirectedLinks.slice(0, 5).map((r) => `${r.href} -> ${r.redirect}`).join("\n"),
+      });
+      recommendations.push({
+        priority: "low",
+        title: "Update Redirected Internal Links",
+        detail: `${redirectedLinks.length} internal links trigger redirects. Update href values to point directly to final canonical URLs.`,
+      });
+    } else if (internalLinkStatuses.length > 0) {
+      checks.push({
+        id: "redirected-internal-links",
+        label: "Redirected Internal Links",
+        category: "technical",
+        status: "pass",
+        detail: `Checked internal links resolve directly without unnecessary redirect hops.`,
       });
     }
   } else if (auditDepth !== "basic") {
@@ -2277,8 +2413,114 @@ async function auditSinglePage(
     });
   }
 
+  // ===== URL Structure, Crawl Depth, Breadcrumbs, Pagination & WWW Consistency =====
+  const pathSegments = parsed.pathname.split("/").filter(Boolean);
+  const pathDepth = pathSegments.length;
+  const hasUppercase = /[A-Z]/.test(parsed.pathname);
+  const hasUnderscores = parsed.pathname.includes("_");
+  const hasQueryParams = Boolean(parsed.search && parsed.search.length > 1);
+  const hasBreadcrumbs =
+    schemaTypes.some((s) => s.type.toLowerCase().includes("breadcrumb")) ||
+    Boolean(doc.querySelector('nav[aria-label*="breadcrumb" i], [class*="breadcrumb" i], [itemtype*="BreadcrumbList"]'));
+  const hasPagination =
+    Boolean(doc.querySelector('link[rel="next"], link[rel="prev"]')) ||
+    links.some((l) => /([?&]page=|\/page\/\d+)/i.test(l.href));
+
+  if (hasUppercase || hasUnderscores || hasQueryParams) {
+    const urlIssues = [
+      hasUppercase && "uppercase characters",
+      hasUnderscores && "underscores instead of hyphens",
+      hasQueryParams && "query parameters",
+    ].filter(Boolean).join(", ");
+    checks.push({
+      id: "url-structure",
+      label: "URL Structure & Hygiene",
+      category: "technical",
+      status: "warn",
+      detail: `URL path contains ${urlIssues} (${parsed.pathname}${parsed.search}). Use clean lowercase hyphenated URLs.`,
+      value: targetUrl,
+    });
+  } else {
+    checks.push({
+      id: "url-structure",
+      label: "URL Structure & Hygiene",
+      category: "technical",
+      status: "pass",
+      detail: `Clean, lowercase, hyphen-friendly URL structure (${parsed.pathname || "/"}).`,
+    });
+  }
+
+  if (pathDepth > 3) {
+    checks.push({
+      id: "crawl-depth",
+      label: "URL & Crawl Depth",
+      category: "technical",
+      status: "warn",
+      detail: `Page sits ${pathDepth} folder levels deep (${parsed.pathname}). Keep important pages within 3 levels of the homepage.`,
+      value: String(pathDepth),
+    });
+  } else {
+    checks.push({
+      id: "crawl-depth",
+      label: "URL & Crawl Depth",
+      category: "technical",
+      status: "pass",
+      detail: `Shallow URL depth (${pathDepth} folder level${pathDepth === 1 ? "" : "s"}).`,
+    });
+  }
+
+  if (hasBreadcrumbs) {
+    checks.push({ id: "breadcrumbs", label: "Breadcrumb Navigation", category: "technical", status: "pass", detail: "Breadcrumb navigation or BreadcrumbList schema detected." });
+  } else {
+    checks.push({ id: "breadcrumbs", label: "Breadcrumb Navigation", category: "technical", status: "info", detail: "No breadcrumb navigation or BreadcrumbList schema detected on this URL." });
+  }
+
+  const wwwConsistency = await checkWwwConsistency(parsed.origin);
+  if (wwwConsistency.checked) {
+    checks.push({
+      id: "www-consistency",
+      label: "WWW vs Non-WWW Consistency",
+      category: "technical",
+      status: wwwConsistency.consistent ? "pass" : "warn",
+      detail: wwwConsistency.detail,
+    });
+    if (!wwwConsistency.consistent) {
+      recommendations.push({
+        priority: "high",
+        title: "Consolidate WWW and Non-WWW Domains",
+        detail: `${wwwConsistency.detail} Configure a permanent 301 redirect to a single canonical host.`,
+      });
+    }
+  }
+
   // ===== NEW: Schema validation =====
   const schemaValidationResults = schemaTypes.map((s) => validateSchema(s));
+  const invalidSchemas = schemaValidationResults.filter((sv) => !sv.valid || sv.errors.length > 0 || sv.warnings.length > 0);
+  if (schemaTypes.length > 0) {
+    if (invalidSchemas.length > 0) {
+      const schemaIssueText = invalidSchemas
+        .map((sv) => `${sv.type}: ${[...sv.errors, ...sv.warnings].join("; ")}`)
+        .join(" | ");
+      checks.push({
+        id: "schema-validation",
+        label: "Schema Markup Validation",
+        category: "technical",
+        status: invalidSchemas.some((sv) => !sv.valid || sv.errors.length > 0) ? "fail" : "warn",
+        detail: `${invalidSchemas.length} schema block(s) have validation issues: ${schemaIssueText}`,
+        value: schemaIssueText,
+      });
+    } else {
+      checks.push({
+        id: "schema-validation",
+        label: "Schema Markup Validation",
+        category: "technical",
+        status: "pass",
+        detail: `All ${schemaTypes.length} structured data block(s) passed required field validation.`,
+      });
+    }
+  }
+
+  const urlStructure = { pathDepth, hasUppercase, hasUnderscores, hasQueryParams, hasBreadcrumbs, hasPagination };
 
   // ===== NEW: Content recommendations (deterministic, no AI) =====
   const contentRecs = generateContentRecommendations(title, description, h1s, keywords, text);
@@ -2500,12 +2742,15 @@ async function auditSinglePage(
   const STANDARD_CHECK_IDS = new Set([
     ...BASIC_CHECK_IDS,
     "hreflang", "open-graph", "twitter-cards", "keyword-density",
-    "external-links", "dofollow-links", "nofollow-links", "anchor-text",
-    "charset", "sitemap-in-robots", "security-headers", "compression",
+    "external-links", "dofollow-links", "nofollow-links", "external-nofollow", "internal-nofollow-trap",
+    "anchor-text", "charset", "sitemap-in-robots", "security-headers", "compression",
     "favicon", "response-time", "html-size", "duplicate-content",
-    "author-publisher", "broken-links", "perf-cls", "perf-img-dims",
-    "perf-render-blocking", "perf-dom-size", "bp-hsts", "bp-csp",
-    "bp-mixed-content", "readability",
+    "author-publisher", "broken-links", "redirect-chain", "redirected-internal-links",
+    "url-structure", "crawl-depth", "breadcrumbs", "www-consistency", "schema-validation",
+    "perf-cls", "perf-img-dims", "perf-render-blocking", "perf-dom-size", "perf-cache",
+    "perf-unused-js", "perf-css-count", "perf-js-count", "perf-img-count", "perf-font-display",
+    "bp-https-redirect", "bp-hsts", "bp-csp", "bp-clickjacking", "bp-mixed-content",
+    "a11y-touch-target", "a11y-heading-structure", "readability",
   ]);
 
   let filteredChecks = checks;
@@ -2571,6 +2816,9 @@ async function auditSinglePage(
     schemaValidation: schemaValidationResults,
     contentRecommendations: contentRecs,
     keywordMetrics,
+    redirectChain: fetchedRedirectChain,
+    urlStructure,
+    wwwConsistency,
   };
 }
 
@@ -2706,6 +2954,92 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
       }
     }
 
+    // Link analysis metrics across batch
+    let pagesWithoutInternalLinks = 0;
+    let pagesWithoutExternalLinks = 0;
+    let totalInternalLinks = 0;
+    let totalExternalLinks = 0;
+    let totalDofollowLinks = 0;
+    let totalNofollowLinks = 0;
+    let externalLinksWithoutNofollow = 0;
+    let internalLinksWithNofollow = 0;
+
+    for (const r of results) {
+      const internalCount = r.linkAnalysis?.internal?.length ?? 0;
+      const externalCount = r.linkAnalysis?.external?.length ?? 0;
+      const dofollowCount = r.linkAnalysis?.dofollow?.length ?? 0;
+      const nofollowCount = r.linkAnalysis?.nofollow?.length ?? 0;
+
+      totalInternalLinks += internalCount;
+      totalExternalLinks += externalCount;
+      totalDofollowLinks += dofollowCount;
+      totalNofollowLinks += nofollowCount;
+
+      if (internalCount === 0) {
+        pagesWithoutInternalLinks++;
+        r.checks.push({
+          id: "orphan-page-no-internal",
+          label: "Internal Navigation Links",
+          category: "off-page",
+          status: "fail",
+          detail: "0 internal links found on this page. It is an orphan or dead-end URL.",
+        });
+      }
+
+      if (externalCount === 0) {
+        pagesWithoutExternalLinks++;
+      } else {
+        const extWithoutNofollow = (r.linkAnalysis?.external || []).filter(
+          (l) => !l.rel.includes("nofollow") && !l.rel.includes("sponsored") && !l.rel.includes("ugc")
+        );
+        if (extWithoutNofollow.length > 0) {
+          externalLinksWithoutNofollow += extWithoutNofollow.length;
+        }
+      }
+
+      const intWithNofollow = (r.linkAnalysis?.internal || []).filter((l) => l.rel.includes("nofollow"));
+      if (intWithNofollow.length > 0) {
+        internalLinksWithNofollow += intWithNofollow.length;
+      }
+    }
+
+    // Track contextual inbound internal links across audited batch URLs
+    const normPath = (u: string): string => {
+      try {
+        const p = new URL(u);
+        return `${normalizeHostname(p.hostname)}${p.pathname.replace(/\/+$/, "") || "/"}`;
+      } catch {
+        return u.toLowerCase();
+      }
+    };
+    const inboundLinkCounts = new Map<string, number>();
+    for (const r of results) {
+      const srcKey = normPath(r.url || "");
+      for (const l of r.linkAnalysis?.internal || []) {
+        const destKey = normPath(l.href);
+        if (destKey !== srcKey) {
+          inboundLinkCounts.set(destKey, (inboundLinkCounts.get(destKey) || 0) + 1);
+        }
+      }
+    }
+    const orphanInboundUrls: string[] = [];
+    if (results.length >= 3) {
+      for (let i = 1; i < results.length; i++) {
+        const r = results[i];
+        const key = normPath(r.url || "");
+        if ((inboundLinkCounts.get(key) || 0) === 0 && r.url) {
+          orphanInboundUrls.push(r.url);
+          r.checks.push({
+            id: "orphan-page-no-inbound",
+            label: "Orphan Page (No Contextual Inbound Links)",
+            category: "off-page",
+            status: "warn",
+            detail: "0 contextual internal links from other audited pages point to this URL.",
+          });
+        }
+      }
+    }
+
     const validScores = results.map((r) => r.score).filter((s) => typeof s === "number");
     const avgScore = validScores.length > 0 ? Math.round(validScores.reduce((a, b) => a + b, 0) / validScores.length) : 0;
 
@@ -2713,6 +3047,15 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
       duplicateTitles: [...titleMap.entries()].filter(([, u]) => u.length > 1).map(([title, urls]) => ({ title, count: urls.length, urls })),
       duplicateDescriptions: [...descMap.entries()].filter(([, u]) => u.length > 1).map(([description, urls]) => ({ description, count: urls.length, urls })),
       duplicateH1s: [...h1Map.entries()].filter(([, u]) => u.length > 1).map(([h1, urls]) => ({ h1, count: urls.length, urls })),
+      pagesWithoutInternalLinks,
+      pagesWithoutExternalLinks,
+      externalLinksWithoutNofollow,
+      internalLinksWithNofollow,
+      totalInternalLinks,
+      totalExternalLinks,
+      totalDofollowLinks,
+      totalNofollowLinks,
+      orphanInboundUrls,
     };
 
     if (mode === "outreach") {
@@ -2789,8 +3132,9 @@ export async function handleSeoAudit(body: Record<string, unknown>) {
       sitemapsChecked = resolved.sitemapsChecked;
     }
 
-    if (!urls || urls.length === 0) {
-      urls = await discoverCustomUrls(targetUrl, sitemapContent, sitemapUrl);
+    if (!urls || urls.length < 50) {
+      const crawled = await discoverCustomUrls(targetUrl, sitemapContent, sitemapUrl);
+      urls = [...(urls || []), ...crawled];
     }
 
     if (!urls || urls.length === 0) {
@@ -2914,6 +3258,7 @@ export interface OdTakeaways {
   topIssues: OdTakeawayItem[];
   stagesFinished: string[];
   pagesAudited: number;
+  clientReport?: import("../src/types").ClientSeoAuditReport;
   metrics: {
     ttfbMs: number;
     estimatedLcpSec: number;
@@ -2935,6 +3280,14 @@ export function generateOdTakeaways(options: {
     duplicateTitles?: { title: string; count: number; urls: string[] }[];
     duplicateDescriptions?: { description: string; count: number; urls: string[] }[];
     duplicateH1s?: { h1: string; count: number; urls: string[] }[];
+    pagesWithoutInternalLinks?: number;
+    pagesWithoutExternalLinks?: number;
+    externalLinksWithoutNofollow?: number;
+    internalLinksWithNofollow?: number;
+    totalInternalLinks?: number;
+    totalExternalLinks?: number;
+    totalDofollowLinks?: number;
+    totalNofollowLinks?: number;
   };
   stagesFinished: string[];
   websiteUrl: string;
@@ -2986,6 +3339,15 @@ export function generateOdTakeaways(options: {
 
   const duplicateTitlesCount = duplicatesSummary?.duplicateTitles?.reduce((acc, d) => acc + d.count, 0) || 0;
   const duplicateDescCount = duplicatesSummary?.duplicateDescriptions?.reduce((acc, d) => acc + d.count, 0) || 0;
+  const duplicateH1Count = duplicatesSummary?.duplicateH1s?.reduce((acc, d) => acc + d.count, 0) || 0;
+  const pagesWithoutInternalLinks = duplicatesSummary?.pagesWithoutInternalLinks ?? 0;
+  const pagesWithoutExternalLinks = duplicatesSummary?.pagesWithoutExternalLinks ?? 0;
+  const externalLinksWithoutNofollow = duplicatesSummary?.externalLinksWithoutNofollow ?? 0;
+  const internalLinksWithNofollow = duplicatesSummary?.internalLinksWithNofollow ?? 0;
+  const totalInternalLinks = duplicatesSummary?.totalInternalLinks ?? 0;
+  const totalExternalLinks = duplicatesSummary?.totalExternalLinks ?? 0;
+  const totalDofollowLinks = duplicatesSummary?.totalDofollowLinks ?? 0;
+  const totalNofollowLinks = duplicatesSummary?.totalNofollowLinks ?? 0;
 
   const candidates: (OdTakeawayItem & { weight: number })[] = [];
 
@@ -3075,25 +3437,56 @@ export function generateOdTakeaways(options: {
     });
   }
 
-  // Duplicate titles (Item 1: Renamed from keyword cannibalization to duplicate title tags)
+  // Duplicate titles across pages
   if (duplicateTitlesCount > 0) {
     candidates.push({
       id: "duplicate-titles",
-      weight: 80,
+      weight: 88,
       severity: "high",
       finding: "Duplicate Title Tags Across Indexed Pages",
       metric: `${duplicateTitlesCount} pages sharing duplicate title tags`,
       sampleSize: pagesAudited,
       source: "measured",
-      detail: "Multiple pages share identical title tags, confusing search engine ranking algorithms and reducing click-through rates.",
+      detail: `Multiple pages (${duplicateTitlesCount} of ${pagesAudited} audited) share identical title tags, confusing search engine ranking algorithms and reducing click-through rates.`,
       recommendation: "Assign distinct, intent-specific title tags (50-60 characters) targeting unique search terms for every indexed URL.",
     });
   }
 
+  // Duplicate descriptions across pages
+  if (duplicateDescCount > 0) {
+    candidates.push({
+      id: "duplicate-descriptions",
+      weight: 84,
+      severity: "high",
+      finding: "Duplicate Meta Descriptions Across Audited Pages",
+      metric: `${duplicateDescCount} pages sharing duplicate meta descriptions`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: `Identical meta descriptions are shared across ${duplicateDescCount} pages. Google requires unique snippet descriptions to differentiate search results and maximize click-through rates.`,
+      recommendation: "Draft bespoke, conversion-oriented meta descriptions (150-160 characters) tailored to the unique intent of each page.",
+    });
+  }
+
+  // Duplicate H1 headings across pages
+  if (duplicateH1Count > 0) {
+    candidates.push({
+      id: "duplicate-h1",
+      weight: 81,
+      severity: "medium",
+      finding: "Duplicate Primary H1 Headings Across Audited Pages",
+      metric: `${duplicateH1Count} pages sharing duplicate H1 headings`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: `Identical primary H1 headings were detected across ${duplicateH1Count} pages. Each page should feature a single, distinct H1 topic defining the primary subject matter of that specific URL.`,
+      recommendation: "Rewrite primary H1 headings to be unique and descriptive for each individual page.",
+    });
+  }
+
+  // Missing or multiple H1s on a page
   if (missingH1Count > 0) {
     candidates.push({
       id: "h1-hierarchy-issues",
-      weight: 75,
+      weight: 78,
       severity: "medium",
       finding: "Improper Heading Structure & Multiple or Missing H1 Headings",
       metric: `${missingH1Count} page${missingH1Count > 1 ? "s" : ""} with multiple or missing H1s`,
@@ -3101,6 +3494,66 @@ export function generateOdTakeaways(options: {
       source: "measured",
       detail: "Pages have missing or multiple H1 tags, diluting keyword relevancy signals and impairing accessibility screen readers.",
       recommendation: "Ensure each page contains exactly one primary H1 tag that encapsulates the page topic, followed by sequential H2 and H3 subheadings.",
+    });
+  }
+
+  // Pages missing internal links (Orphan Pages)
+  if (pagesWithoutInternalLinks > 0) {
+    candidates.push({
+      id: "orphan-pages-internal-links",
+      weight: 85,
+      severity: "high",
+      finding: "Pages Completely Missing Internal Navigation Links",
+      metric: `${pagesWithoutInternalLinks} page${pagesWithoutInternalLinks > 1 ? "s" : ""} with 0 internal links`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: `Detected ${pagesWithoutInternalLinks} page(s) with zero internal navigation links. These orphan pages trap visitors and search crawlers on dead-end URLs with no path back to your site.`,
+      recommendation: "Add contextual internal links to ensure every page has at least 1-3 links connecting to relevant content.",
+    });
+  }
+
+  // External outbound links missing rel="nofollow"
+  if (externalLinksWithoutNofollow > 0) {
+    candidates.push({
+      id: "missing-nofollow-external",
+      weight: 73,
+      severity: "medium",
+      finding: "External Outbound Links Missing rel='nofollow' Attribute",
+      metric: `${externalLinksWithoutNofollow} outbound link(s) lack rel='nofollow'`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: `${externalLinksWithoutNofollow} outbound external links lack rel='nofollow' or rel='sponsored' attributes. Uncontrolled dofollow external links leak page authority and risk search engine penalties for unnatural outbound linking.`,
+      recommendation: "Audit external outbound links and apply rel='nofollow' or rel='sponsored' to commercial, user-generated, and partner links.",
+    });
+  }
+
+  // Internal links containing rel="nofollow"
+  if (internalLinksWithNofollow > 0) {
+    candidates.push({
+      id: "internal-nofollow-trap",
+      weight: 74,
+      severity: "medium",
+      finding: "Internal Links Containing rel='nofollow' (Crawl Block)",
+      metric: `${internalLinksWithNofollow} internal link(s) contain rel='nofollow'`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: `Internal navigation links are tagged with rel='nofollow', preventing search engine bots from discovering and indexing deeper content pages.`,
+      recommendation: "Remove rel='nofollow' from all internal website navigation and contextual links.",
+    });
+  }
+
+  // Pages lacking outbound external citation links
+  if (pagesWithoutExternalLinks === pagesAudited && pagesAudited > 1) {
+    candidates.push({
+      id: "missing-external-links",
+      weight: 60,
+      severity: "low",
+      finding: "Pages Lacking Outbound Reference or Citation Links",
+      metric: `0 external links across all ${pagesAudited} pages`,
+      sampleSize: pagesAudited,
+      source: "measured",
+      detail: "All audited pages lack outbound reference or external citation links. Search quality guidelines favor pages that cite authoritative external sources.",
+      recommendation: "Incorporate helpful outbound links to reputable authoritative industry references or documentation.",
     });
   }
 
@@ -3176,8 +3629,8 @@ export function generateOdTakeaways(options: {
     : "No critical technical deficits identified";
 
   const summaryText = isNoOpportunity
-    ? `The technical SEO audit for ${companyName} (${websiteUrl}) scored ${overallScore}/100 (Grade ${grade}). The site is technically well-optimized with no critical technical deficits. No cold outreach opportunity identified.`
-    : `The technical SEO audit for ${companyName} (${websiteUrl}) scored ${overallScore}/100 (Grade ${grade}). The analysis identified ${topIssues.length} high-impact technical bottlenecks requiring remediation: ${metricHighlights}. Addressing these issues will immediately improve Google crawl budget efficiency, Core Web Vitals compliance, and organic search conversions.`;
+    ? `The technical SEO audit for ${companyName} (${websiteUrl}) evaluated ${pagesAudited} page${pagesAudited > 1 ? "s" : ""} and scored ${overallScore}/100 (Grade ${grade}). The site is technically well-optimized with no critical technical deficits. No cold outreach opportunity identified.`
+    : `The technical SEO audit for ${companyName} (${websiteUrl}) evaluated ${pagesAudited} page${pagesAudited > 1 ? "s" : ""} and scored ${overallScore}/100 (Grade ${grade}). The analysis identified ${topIssues.length} high-impact technical bottlenecks requiring remediation: ${metricHighlights}. Addressing these issues will immediately improve Google crawl budget efficiency, Core Web Vitals compliance, and organic search conversions.`;
 
   // Item 1: overallScore is 'computed', not 'measured'; CLS is 'estimated' risk
   const dataSources: Record<string, "measured" | "estimated" | "computed"> = {
@@ -3212,9 +3665,18 @@ export function generateOdTakeaways(options: {
       missingH1Count,
       duplicateTitlesCount,
       duplicateDescCount,
+      duplicateH1Count,
       schemaCount,
       missingCanonicalCount,
       httpsRedirect,
+      pagesWithoutInternalLinks,
+      pagesWithoutExternalLinks,
+      externalLinksWithoutNofollow,
+      internalLinksWithNofollow,
+      totalInternalLinks,
+      totalExternalLinks,
+      totalDofollowLinks,
+      totalNofollowLinks,
     },
   };
 }

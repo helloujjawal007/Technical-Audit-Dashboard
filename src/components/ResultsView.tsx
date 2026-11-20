@@ -20,6 +20,7 @@ import { GooglePropertiesPanel } from "@/components/GooglePropertiesPanel";
 import { InternalLinkStatusPanel } from "@/components/InternalLinkStatusPanel";
 import { type AuditResult, type CustomAuditData } from "@/types";
 import { SendToOutreachModal } from "@/components/SendToOutreachModal";
+import { ClientAuditReport } from "@/components/ClientAuditReport";
 
 // SEMrush Extended Suite
 import {
@@ -46,6 +47,7 @@ interface ResultsViewProps {
 
 type SemrushTab =
   | "overview"
+  | "client-report"
   | "issues"
   | "thematic"
   | "architecture"
@@ -65,6 +67,7 @@ interface TabMeta {
 
 const SEMRUSH_TABS: TabMeta[] = [
   { id: "overview", label: "Overview", icon: Sparkles },
+  { id: "client-report", label: "Client Audit Report", icon: FileText },
   {
     id: "issues",
     label: "Issues Explorer",
@@ -194,6 +197,15 @@ export function ResultsView({
 
       {/* 3. SEMrush Tab Content Area */}
       <div className="min-h-[400px]">
+        {/* Client-Ready Report */}
+        {tab === "client-report" && (
+          <ClientAuditReport
+            websiteUrl={url || result.url || ""}
+            primaryResult={result}
+            prebuiltReport={result.clientReport}
+          />
+        )}
+
         {/* Tab 1: Overview */}
         {tab === "overview" && (
           <SemrushOverview
