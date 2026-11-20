@@ -3316,6 +3316,7 @@ Deno.serve(async (req: Request) => {
             checks: result.checks as unknown as Record<string, unknown>,
             result_data: result as unknown as Record<string, unknown>,
             error: null,
+            user_id: (body.userId || body.user_id || null) as string | null,
             audit_type: mode || "single",
             audit_depth: auditDepth || "standard",
           }).select("id").single();

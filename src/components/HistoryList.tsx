@@ -5,10 +5,12 @@ import { scoreColor, type AuditRow } from "@/types";
 
 interface HistoryListProps {
   audits: AuditRow[];
-  onSelect: (audit: AuditRow) => void;
+  onSelect: (audit: AuditRow, domainAudits?: AuditRow[]) => void;
   selectedId: string | null;
   onDelete: (id: string) => void;
   onRefresh: () => void;
+  activeTab?: string;
+  onTabChange?: (tab: string) => void;
 }
 
 type IconComponent = typeof Globe;
@@ -66,9 +68,15 @@ function groupByDate(audits: AuditRow[]): { label: string; audits: AuditRow[] }[
   return Array.from(groups.entries()).map(([label, groupedAudits]) => ({ label, audits: groupedAudits }));
 }
 
-export function HistoryList({ audits, onSelect, selectedId, onDelete, onRefresh }: HistoryListProps) {
+export function HistoryList({ audits, onSelect, selectedId, onDelete, onRefresh, activeTab: externalActiveTab, onTabChange }: HistoryListProps) {
   const [pollingIds, setPollingIds] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState<string>("crawl");
+  const [internalActiveTab, setInternalActiveTab] = useState<string>("single");
+
+  const activeTab = externalActiveTab !== undefined ? externalActiveTab : internalActiveTab;
+  const setActiveTab = (tab: string) => {
+    setInternalActiveTab(tab);
+    onTabChange?.(tab);
+  };
 
   useEffect(() => {
     const pending = audits.filter((a) => a.status === "pending" || a.status === "running");
@@ -188,7 +196,7 @@ export function HistoryList({ audits, onSelect, selectedId, onDelete, onRefresh 
                   {formatDateGroup(latest.created_at)} · {domainAudits.length} {domainAudits.length === 1 ? "page" : "pages"}
                 </p>
                 <div
-                  onClick={() => onSelect(latest)}
+                  onClick={() => onSelect(latest, domainAudits)}
                   className={`group flex items-center gap-2.5 p-2.5 rounded-lg cursor-pointer border transition-all ${
                     isSelected ? "bg-blue-50 border-blue-200" : "bg-white border-slate-100 hover:border-slate-200 hover:bg-slate-50"
                   }`}

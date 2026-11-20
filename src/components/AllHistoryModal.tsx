@@ -7,7 +7,7 @@ import { scoreColor, type AuditRow } from "@/types";
 interface AllHistoryModalProps {
   open: boolean;
   onClose: () => void;
-  onSelect: (audit: AuditRow) => void;
+  onSelect: (audit: AuditRow, domainAudits?: AuditRow[]) => void;
   onDelete: (id: string) => void;
 }
 
@@ -197,11 +197,11 @@ export function AllHistoryModal({ open, onClose, onSelect, onDelete }: AllHistor
                             {dateAudits.map((audit) => {
                               const auditScore = audit.score !== null ? scoreColor(audit.score) : null;
                               return (
-                              <div
-                                key={audit.id}
-                                onClick={() => { onSelect(audit); onClose(); }}
-                                className="group flex items-center gap-3 p-3 rounded-xl cursor-pointer border border-slate-100 hover:border-slate-200 hover:bg-slate-50 transition-all"
-                              >
+                                <div
+                                  key={audit.id}
+                                  onClick={() => { onSelect(audit, domainAudits); onClose(); }}
+                                  className="group flex items-center gap-3 p-3 rounded-xl cursor-pointer border border-slate-100 hover:border-slate-200 hover:bg-slate-50 transition-all"
+                                >
                                 <div className="flex-shrink-0">
                                   {audit.status === "running" || audit.status === "pending" ? (
                                     <Loader2 className="w-8 h-8 p-1.5 rounded-lg bg-slate-100 text-slate-500 animate-spin" />

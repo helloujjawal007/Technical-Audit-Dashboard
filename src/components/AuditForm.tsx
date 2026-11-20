@@ -31,6 +31,8 @@ interface AuditFormProps {
   loading: boolean;
   paused: boolean;
   onPauseToggle: () => void;
+  initialMode?: AuditMode;
+  onScopeChange?: (mode: AuditMode) => void;
 }
 
 const DEPTH_OPTIONS: {
@@ -63,11 +65,11 @@ const DEPTH_OPTIONS: {
   },
 ];
 
-export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditFormProps) {
+export function AuditForm({ onAudit, loading, paused, onPauseToggle, initialMode = "single", onScopeChange }: AuditFormProps) {
   const [siteType, setSiteType] = useState<SiteType>("live");
   const [url, setUrl] = useState("");
   const [multiUrls, setMultiUrls] = useState("");
-  const [mode, setMode] = useState<AuditMode>("crawl");
+  const [mode, setMode] = useState<AuditMode>(initialMode);
   const [depth, setDepth] = useState<AuditDepth>("standard");
   const [extractionFields, setExtractionFields] = useState<CustomExtractionFields>(DEFAULT_EXTRACTION_FIELDS);
   const [inputError, setInputError] = useState<string | null>(null);
@@ -277,7 +279,6 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
               type="button"
               onClick={() => {
                 setSiteType("live");
-                setMode("crawl");
               }}
               disabled={loading}
               className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all ${
@@ -318,7 +319,10 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
                   <button
                     key={item.key}
                     type="button"
-                    onClick={() => setMode(item.key)}
+                    onClick={() => {
+                      setMode(item.key);
+                      onScopeChange?.(item.key);
+                    }}
                     disabled={loading}
                     className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all ${
                       isActive
@@ -424,7 +428,7 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
                 const val = e.target.value.trim();
                 setUrl(val ? `https://${val.replace(/^https?:\/\//i, "")}` : "");
               }}
-              placeholder="example.com"
+              placeholder={effectiveMode === "single" ? "example.com/page-to-audit" : "example.com"}
               disabled={loading}
               className="w-full pl-28 pr-10 py-3.5 rounded-2xl border border-slate-200 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 transition-all shadow-xs text-sm font-medium"
             />
@@ -489,6 +493,8 @@ export function AuditForm({ onAudit, loading, paused, onPauseToggle }: AuditForm
       <p className="text-[11px] text-slate-400 text-center leading-relaxed">
         {effectiveMode === "multiple" || effectiveMode === "staging"
           ? "Inspects multiple specified endpoints simultaneously with performance profiling."
+          : effectiveMode === "single"
+          ? "Audits this specific single page with on-page SEO, Core Web Vitals, and client-ready reporting."
           : "Full site crawl automatically inspects sitemaps and discovers internal links to audit all pages on the site."}
       </p>
     </form>

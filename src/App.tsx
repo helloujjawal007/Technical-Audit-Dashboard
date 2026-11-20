@@ -91,6 +91,7 @@ function App() {
   const pauseRef = useRef(false);
   const cancelRef = useRef(false);
   const [view, setView] = useState<"single" | "crawl">("single");
+  const [historyTab, setHistoryTab] = useState<string>("single");
 
   const [showAllHistory, setShowAllHistory] = useState(false);
   const [showAccountModal, setShowAccountModal] = useState(false);
@@ -254,7 +255,7 @@ function App() {
   const auditSinglePage = async (url: string, auditId?: string, depth?: AuditDepth, mode: string = "single", extractionFields?: CustomExtractionFields): Promise<AuditResult> => {
     return await invokeEdgeFunction<AuditResult>("seo-audit", {
       method: "POST",
-      body: { url, auditId, mode, auditDepth: depth || "standard", extractionFields },
+      body: { url, auditId, mode, auditDepth: depth || "standard", extractionFields, userId: user?.id },
     });
   };
 
@@ -290,15 +291,40 @@ function App() {
     try {
       if (mode === "multiple" || mode === "staging") {
         setView("crawl");
+        setHistoryTab(mode);
         await handleMultipleAudit(input, mode, depth);
+        if (user) await fetchAudits();
       } else if (mode === "single") {
         setView("single");
+        setHistoryTab("single");
         const normalized = normalizeUrl(input);
-        const res = await auditSinglePage(normalized, undefined, depth, "single");
+
+        let auditId: string | undefined;
+        if (user) {
+          try {
+            const { data: auditRow } = await supabase
+              .from("seo_audits")
+              .insert({
+                url: normalized,
+                status: "running",
+                audit_type: "single",
+                audit_depth: depth,
+                user_id: user.id,
+              })
+              .select()
+              .single();
+            auditId = (auditRow as AuditRow | null)?.id;
+          } catch (insertErr) {
+            console.warn("Could not create running single audit placeholder:", insertErr);
+          }
+        }
+
+        const res = await auditSinglePage(normalized, auditId, depth, "single");
         setResult(res);
         const nowIso = new Date().toISOString();
+        const finalAuditId = auditId || res.auditId || "local-" + Date.now();
         setSelected({
-          id: res.auditId || "local-" + Date.now(),
+          id: finalAuditId,
           url: normalized,
           created_at: nowIso,
           updated_at: nowIso,
@@ -313,10 +339,18 @@ function App() {
           audit_type: "single",
           audit_depth: depth,
         });
+
+        if (user) {
+          await fetchAudits();
+        }
       } else {
         // Full crawl mode across all pages
         setView("crawl");
+        setHistoryTab("crawl");
         await handleCrawlAudit(normalizeUrl(input), "crawl", depth);
+        if (user) {
+          await fetchAudits();
+        }
       }
     } finally {
       setLoading(false);
@@ -626,10 +660,49 @@ function App() {
     setActiveNav("audit");
   };
 
-  const handleSelect = async (audit: AuditRow) => {
+  const handleSelect = async (audit: AuditRow, domainAudits?: AuditRow[]) => {
     setSelected(audit);
     setError(null);
     setResult(null);
+
+    // If selecting a site crawl domain that has multiple crawled pages, open full CrawlResultsView!
+    if (audit.audit_type === "crawl") {
+      const related = domainAudits && domainAudits.length > 1
+        ? domainAudits
+        : audits.filter((a) => {
+            if (a.audit_type !== "crawl") return false;
+            try {
+              return new URL(a.url).hostname === new URL(audit.url).hostname;
+            } catch {
+              return false;
+            }
+          });
+
+      if (related.length > 1) {
+        setView("crawl");
+        setCrawlBaseUrl(audit.url);
+        setCrawlPages(
+          related.map((p) => ({
+            url: p.url,
+            status: p.status === "completed" ? "completed" : p.status === "failed" ? "failed" : "pending",
+            result: p.result_data || (p.score !== null ? ({
+              score: p.score || 0,
+              title: p.title,
+              description: p.description,
+              checks: (p.checks as unknown as AuditResult["checks"]) || [],
+            } as AuditResult) : null),
+            error: p.error,
+          }))
+        );
+        setCrawlProgress({
+          completed: related.filter((p) => p.status === "completed").length,
+          total: related.length,
+        });
+        setIsCrawling(false);
+        return;
+      }
+    }
+
     setView("single");
 
     if (audit.status === "completed" && audit.result_data) {
@@ -914,6 +987,11 @@ function App() {
                       pauseRef.current = true;
                     }
                   }}
+                  onScopeChange={(scope) => {
+                    if (scope === "single" || scope === "crawl" || scope === "multiple") {
+                      setHistoryTab(scope);
+                    }
+                  }}
                 />
 
                 {creditError && (
@@ -993,6 +1071,8 @@ function App() {
                           selectedId={selected?.id || null}
                           onDelete={handleDelete}
                           onRefresh={fetchAudits}
+                          activeTab={historyTab}
+                          onTabChange={setHistoryTab}
                         />
                       )}
                     </div>
